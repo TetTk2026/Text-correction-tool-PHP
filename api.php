@@ -1,260 +1,209 @@
 <?php
-
 declare(strict_types=1);
 
-$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['SERVER_PORT'] ?? '') === '443');
-session_set_cookie_params([
-    'httponly' => true,
-    'secure' => $isHttps,
-    'samesite' => 'Lax',
-]);
 session_start();
 
-function json_response(array $data, int $status = 200): never
-{
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store');
+
+function jsonResponse(array $payload, int $status = 200): void {
     http_response_code($status);
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
-function require_post(): void
-{
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-        json_response(['ok' => false, 'error' => ['message' => 'Nur POST erlaubt.', 'type' => 'method_not_allowed']], 405);
+function getJsonBody(): array {
+    $raw = file_get_contents('php://input');
+    if ($raw === false || $raw === '') {
+        return [];
     }
-}
-
-function require_csrf(string $token): void
-{
-    $sessionToken = $_SESSION['csrf_token'] ?? '';
-    if ($token === '' || $sessionToken === '' || !hash_equals($sessionToken, $token)) {
-        json_response(['ok' => false, 'error' => ['message' => 'Ungültiger CSRF-Token.', 'type' => 'csrf']], 403);
-    }
-}
-
-function parse_json_payload(): array
-{
-    $raw = file_get_contents('php://input') ?: '';
     $data = json_decode($raw, true);
-
-    return is_array($data) ? $data : [];
+    if (!is_array($data)) {
+        jsonResponse(['ok' => false, 'error' => ['message' => 'Ungültiges JSON'], 'httpStatus' => 400], 400);
+    }
+    return $data;
 }
 
-function parse_model_id(string $modelInput): string
-{
-    $defaultModel = 'arcee-ai/trinity-large-preview:free';
-    $trimmed = trim($modelInput);
-    if ($trimmed === '') {
-        return $defaultModel;
+function requireCsrf(array $body): void {
+    $token = $body['csrfToken'] ?? '';
+    $sessionToken = $_SESSION['csrf_token'] ?? '';
+    if (!is_string($token) || $token === '' || !is_string($sessionToken) || !hash_equals($sessionToken, $token)) {
+        jsonResponse(['ok' => false, 'error' => ['message' => 'CSRF-Token ungültig'], 'httpStatus' => 403], 403);
     }
-
-    if (str_starts_with($trimmed, 'https://openrouter.ai/')) {
-        $path = trim((string)(parse_url($trimmed, PHP_URL_PATH) ?? ''), '/');
-        return $path !== '' ? $path : $defaultModel;
-    }
-
-    return $trimmed;
 }
 
-function map_error_message(int $statusCode, string $apiMessage): string
-{
-    if ($statusCode === 401 || $statusCode === 403) {
-        return 'API-Key ungültig oder nicht autorisiert.';
+function modelIdFromInput(string $input): string {
+    $trim = trim($input);
+    if ($trim === '') {
+        return 'arcee-ai/trinity-large-preview:free';
     }
-    if ($statusCode === 429) {
-        return 'Rate Limit erreicht. Bitte Retry ausführen.';
+    $parsed = parse_url($trim);
+    if (!is_array($parsed) || !isset($parsed['host'])) {
+        return $trim;
     }
-    if ($statusCode >= 500) {
-        return 'OpenRouter ist momentan nicht erreichbar (5xx).';
+    $host = strtolower((string)$parsed['host']);
+    if (strpos($host, 'openrouter.ai') === false) {
+        return $trim;
     }
-
-    return $apiMessage !== '' ? $apiMessage : ('HTTP ' . $statusCode);
+    $path = trim((string)($parsed['path'] ?? ''), '/');
+    if ($path === '') {
+        return $trim;
+    }
+    $parts = explode('/', $path);
+    if ($parts[0] === 'api') {
+        return $trim;
+    }
+    return $path;
 }
 
-function do_openrouter_call(string $apiKey, string $modelId, string $chunkText): array
-{
-    $started = microtime(true);
-    $payload = [
-        'model' => $modelId,
-        'messages' => [
-            [
-                'role' => 'system',
-                'content' => 'Du bist ein präziser deutscher Lektor. Korrigiere nur Fehler (Leerzeichen mitten im Wort, Ligaturen/Unicode-Artefakte, Rechtschreibung, Grammatik). Erhalte Bedeutung und Inhalt. Keine Erklärungen, gib NUR den korrigierten Text zurück.',
-            ],
-            [
-                'role' => 'user',
-                'content' => "Korrigiere den folgenden Text. Gib NUR den korrigierten Text zurück:\n\n" . $chunkText,
-            ],
-        ],
-        'temperature' => 0.1,
-    ];
+function deriveReferer(): string {
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost:8000';
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+    return ($https ? 'https://' : 'http://') . $host;
+}
 
-    $referer = isset($_SERVER['HTTP_HOST'])
-        ? (($GLOBALS['isHttps'] ?? false) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST']
-        : 'http://localhost';
+$body = getJsonBody();
+$action = $body['action'] ?? null;
 
-    $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => [
-            'Authorization: Bearer ' . $apiKey,
-            'Content-Type: application/json',
-            'HTTP-Referer: ' . $referer,
-            'X-OpenRouter-Title: OCR Korrektur Tool',
-        ],
-        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
-        CURLOPT_TIMEOUT => 90,
-        CURLOPT_CONNECTTIMEOUT => 20,
-    ]);
+if (!is_string($action) || $action === '') {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'Action fehlt'], 'httpStatus' => 400], 400);
+}
 
-    $rawBody = curl_exec($ch);
-    $curlErr = curl_error($ch);
-    $curlErrNo = curl_errno($ch);
-    $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    $elapsedMs = (int)round((microtime(true) - $started) * 1000);
-
-    if ($rawBody === false) {
-        $isTimeout = $curlErrNo === CURLE_OPERATION_TIMEDOUT;
-
-        return [
-            'ok' => false,
-            'httpStatus' => $httpStatus > 0 ? $httpStatus : 502,
-            'error' => [
-                'message' => $isTimeout ? 'Timeout beim Warten auf OpenRouter.' : ('Verbindungsfehler: ' . $curlErr),
-                'type' => $isTimeout ? 'timeout' : 'curl_error',
-                'raw' => $curlErr,
-            ],
-            'meta' => [
-                'model' => $modelId,
-                'inputChars' => mb_strlen($chunkText),
-                'outputChars' => 0,
-                'elapsedMs' => $elapsedMs,
-            ],
-        ];
-    }
-
-    $decoded = json_decode($rawBody, true);
-    if ($httpStatus >= 400) {
-        $apiMsg = (string)($decoded['error']['message'] ?? '');
-
-        return [
-            'ok' => false,
-            'httpStatus' => $httpStatus,
-            'error' => [
-                'message' => map_error_message($httpStatus, $apiMsg),
-                'type' => 'http_error',
-                'raw' => $apiMsg !== '' ? $apiMsg : mb_substr($rawBody, 0, 800),
-            ],
-            'meta' => [
-                'model' => $modelId,
-                'inputChars' => mb_strlen($chunkText),
-                'outputChars' => 0,
-                'elapsedMs' => $elapsedMs,
-            ],
-        ];
-    }
-
-    $correctedText = trim((string)($decoded['choices'][0]['message']['content'] ?? ''));
-    if ($correctedText === '') {
-        return [
-            'ok' => false,
-            'httpStatus' => $httpStatus > 0 ? $httpStatus : 502,
-            'error' => [
-                'message' => 'Leere Modellantwort erhalten.',
-                'type' => 'empty_response',
-                'raw' => mb_substr((string)$rawBody, 0, 800),
-            ],
-            'meta' => [
-                'model' => $modelId,
-                'inputChars' => mb_strlen($chunkText),
-                'outputChars' => 0,
-                'elapsedMs' => $elapsedMs,
-            ],
-        ];
-    }
-
-    return [
+if ($action === 'ping') {
+    jsonResponse([
         'ok' => true,
-        'correctedText' => $correctedText,
-        'httpStatus' => $httpStatus,
-        'meta' => [
-            'model' => $modelId,
-            'inputChars' => mb_strlen($chunkText),
-            'outputChars' => mb_strlen($correctedText),
-            'elapsedMs' => $elapsedMs,
-        ],
-    ];
+        'time' => gmdate('c'),
+        'session' => session_status() === PHP_SESSION_ACTIVE
+    ]);
 }
 
-require_post();
-$payload = parse_json_payload();
-$action = (string)($_GET['action'] ?? $payload['action'] ?? '');
-
-if (!isset($_SESSION['csrf_token'])) {
-    json_response(['ok' => false, 'error' => ['message' => 'Session fehlt. Bitte Seite neu laden.', 'type' => 'session']], 400);
-}
-
-if ($action === 'setApiKey') {
-    require_csrf((string)($payload['csrfToken'] ?? ''));
-
-    if (trim((string)getenv('OPENROUTER_API_KEY')) !== '') {
-        json_response(['ok' => true, 'message' => 'OPENROUTER_API_KEY ist serverseitig aktiv.']);
+if ($action === 'saveKey') {
+    requireCsrf($body);
+    $envKey = (string) getenv('OPENROUTER_API_KEY');
+    if ($envKey !== '') {
+        jsonResponse(['ok' => true, 'message' => 'ENV-Key aktiv']);
     }
-
-    $apiKey = trim((string)($payload['apiKey'] ?? ''));
-    if ($apiKey === '') {
-        json_response(['ok' => false, 'error' => ['message' => 'API-Key fehlt.', 'type' => 'validation']], 400);
+    $apiKey = $body['apiKey'] ?? '';
+    if (!is_string($apiKey) || trim($apiKey) === '') {
+        jsonResponse(['ok' => false, 'error' => ['message' => 'API-Key fehlt'], 'httpStatus' => 400], 400);
     }
-
-    $_SESSION['openrouter_api_key'] = $apiKey;
-    json_response(['ok' => true, 'message' => 'API-Key in Session gespeichert.']);
+    $_SESSION['openrouter_api_key'] = trim($apiKey);
+    jsonResponse(['ok' => true]);
 }
 
-if ($action === 'clearApiKey') {
-    require_csrf((string)($payload['csrfToken'] ?? ''));
+if ($action === 'deleteKey') {
+    requireCsrf($body);
     unset($_SESSION['openrouter_api_key']);
-    json_response(['ok' => true, 'message' => 'Session-API-Key gelöscht.']);
+    jsonResponse(['ok' => true]);
 }
 
-if ($action === 'correctBlock') {
-    require_csrf((string)($payload['csrfToken'] ?? ''));
-
-    $chunkText = (string)($payload['chunkText'] ?? '');
-    $modelInput = (string)($payload['modelInput'] ?? '');
-
-    if ($chunkText === '') {
-        json_response(['ok' => false, 'error' => ['message' => 'chunkText fehlt.', 'type' => 'validation']], 400);
-    }
-
-    $apiKey = trim((string)getenv('OPENROUTER_API_KEY'));
-    if ($apiKey === '') {
-        $apiKey = (string)($_SESSION['openrouter_api_key'] ?? '');
-    }
-
-    if ($apiKey === '') {
-        json_response([
-            'ok' => false,
-            'error' => ['message' => 'OpenRouter API-Key fehlt. Bitte zuerst speichern.', 'type' => 'auth'],
-            'httpStatus' => 401,
-        ], 401);
-    }
-
-    $modelId = parse_model_id($modelInput);
-    $result = do_openrouter_call($apiKey, $modelId, $chunkText);
-
-    if (!($result['ok'] ?? false)) {
-        $status = (int)($result['httpStatus'] ?? 502);
-        if ($status < 400) {
-            $status = 502;
-        }
-        json_response($result, $status);
-    }
-
-    json_response($result, 200);
+if ($action !== 'correctBlock') {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'Unbekannte Action'], 'httpStatus' => 404], 404);
 }
 
-json_response(['ok' => false, 'error' => ['message' => 'Unbekannte Action.', 'type' => 'routing']], 400);
+requireCsrf($body);
+
+$blockId = $body['blockId'] ?? null;
+$chunkText = $body['chunkText'] ?? '';
+$modelInput = $body['modelInput'] ?? '';
+
+if (!is_int($blockId) && !(is_string($blockId) && ctype_digit($blockId))) {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'blockId fehlt/ungültig'], 'httpStatus' => 400], 400);
+}
+if (!is_string($chunkText) || trim($chunkText) === '') {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'chunkText fehlt'], 'httpStatus' => 400], 400);
+}
+if (!is_string($modelInput)) {
+    $modelInput = '';
+}
+
+$apiKey = (string) getenv('OPENROUTER_API_KEY');
+if ($apiKey === '' && isset($_SESSION['openrouter_api_key']) && is_string($_SESSION['openrouter_api_key'])) {
+    $apiKey = trim($_SESSION['openrouter_api_key']);
+}
+if ($apiKey === '') {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'Kein OpenRouter API-Key verfügbar'], 'httpStatus' => 401], 401);
+}
+
+$modelId = modelIdFromInput($modelInput);
+$payload = [
+    'model' => $modelId,
+    'messages' => [
+        [
+            'role' => 'system',
+            'content' => 'Du bist ein präziser deutscher Lektor. Korrigiere OCR/PDF-Fehler, Rechtschreibung und Grammatik. Erhalte Bedeutung. Gib NUR den korrigierten Text zurück.'
+        ],
+        [
+            'role' => 'user',
+            'content' => "Korrigiere den folgenden Text. Gib NUR den korrigierten Text zurück:\n\n" . $chunkText
+        ],
+    ],
+    'temperature' => 0.1,
+];
+
+$ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
+if ($ch === false) {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'cURL init fehlgeschlagen'], 'httpStatus' => 500], 500);
+}
+
+curl_setopt_array($ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer ' . $apiKey,
+        'Content-Type: application/json',
+        'HTTP-Referer: ' . deriveReferer(),
+        'X-OpenRouter-Title: OCR Korrektur Tool',
+    ],
+    CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+    CURLOPT_TIMEOUT => 60,
+    CURLOPT_CONNECTTIMEOUT => 15,
+]);
+
+$response = curl_exec($ch);
+$errno = curl_errno($ch);
+$error = curl_error($ch);
+$httpStatus = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($errno !== 0) {
+    if ($errno === CURLE_OPERATION_TIMEDOUT) {
+        jsonResponse(['ok' => false, 'error' => ['message' => 'Timeout'], 'httpStatus' => 0], 200);
+    }
+    jsonResponse(['ok' => false, 'error' => ['message' => 'Netzwerkfehler: ' . $error], 'httpStatus' => 0], 200);
+}
+
+$decoded = json_decode((string)$response, true);
+if (!is_array($decoded)) {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'Ungültige Antwort von OpenRouter'], 'httpStatus' => $httpStatus], 200);
+}
+
+if ($httpStatus !== 200) {
+    $msg = $decoded['error']['message'] ?? $decoded['message'] ?? ('OpenRouter HTTP ' . $httpStatus);
+    jsonResponse([
+        'ok' => false,
+        'error' => ['message' => (string) $msg],
+        'httpStatus' => $httpStatus,
+        'meta' => ['blockId' => (int) $blockId, 'model' => $modelId]
+    ], 200);
+}
+
+$correctedText = '';
+if (isset($decoded['choices'][0]['message']['content']) && is_string($decoded['choices'][0]['message']['content'])) {
+    $correctedText = trim($decoded['choices'][0]['message']['content']);
+}
+if ($correctedText === '') {
+    jsonResponse(['ok' => false, 'error' => ['message' => 'Leere Modellantwort'], 'httpStatus' => 200], 200);
+}
+
+jsonResponse([
+    'ok' => true,
+    'correctedText' => $correctedText,
+    'httpStatus' => 200,
+    'meta' => [
+        'blockId' => (int) $blockId,
+        'model' => $modelId,
+        'inputChars' => mb_strlen($chunkText),
+        'outputChars' => mb_strlen($correctedText),
+    ]
+]);

@@ -1,548 +1,456 @@
 <?php
-
 declare(strict_types=1);
 
-$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['SERVER_PORT'] ?? '') === '443');
-session_set_cookie_params([
-    'httponly' => true,
-    'secure' => $isHttps,
-    'samesite' => 'Lax',
-]);
 session_start();
 
-if (!isset($_SESSION['csrf_token'])) {
+if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
-$hasEnvKey = trim((string)getenv('OPENROUTER_API_KEY')) !== '';
-?><!doctype html>
+$csrfToken = $_SESSION['csrf_token'];
+$hasEnvKey = (string) getenv('OPENROUTER_API_KEY') !== '';
+$hasSessionKey = isset($_SESSION['openrouter_api_key']) && $_SESSION['openrouter_api_key'] !== '';
+?>
+<!doctype html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Variante C • OCR Korrektur Tool (PHP + OpenRouter)</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCR Korrektur Tool (PHP + OpenRouter)</title>
   <style>
-    body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; background: #f3f4f6; color: #111827; }
-    .app { max-width: 1400px; margin: 0 auto; padding: 16px; }
-    .panel { background: #fff; border: 1px solid #d1d5db; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
-    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    label { font-size: 14px; display: flex; gap: 6px; align-items: center; }
-    input, textarea, button { font: inherit; }
-    input[type="number"], input[type="text"], input[type="password"] { border: 1px solid #9ca3af; border-radius: 8px; padding: 7px 8px; }
-    input[type="number"] { width: 120px; }
-    input[type="text"] { min-width: 360px; }
-    textarea { width: 100%; min-height: 220px; border: 1px solid #9ca3af; border-radius: 8px; padding: 10px; resize: vertical; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .small { font-size: 13px; color: #4b5563; }
-    button { border: 1px solid #9ca3af; background: #e5e7eb; color: #111827; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
-    button:hover { background: #d1d5db; }
-    button:disabled { opacity: .55; cursor: not-allowed; }
-    .statusline { font-weight: 600; }
-    .block { background: #fff; border: 1px solid #d1d5db; border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
-    .block-head { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; flex-wrap: wrap; }
-    .badge { border-radius: 999px; border: 1px solid #cbd5e1; padding: 2px 8px; font-size: 12px; font-weight: 700; }
-    .badge.waiting { background: #f3f4f6; }
-    .badge.running { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; }
-    .badge.done { background: #dcfce7; color: #166534; border-color: #86efac; }
-    .badge.error { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
-    .badge.aborted { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
-    .loader { height: 4px; background: #e5e7eb; }
-    .loader span { display: block; height: 100%; width: 0; }
-    .loader.running span { width: 35%; background: #2563eb; animation: slide 1.1s linear infinite; }
-    .loader.done span { width: 100%; background: #16a34a; }
-    .loader.error span { width: 100%; background: #dc2626; }
-    .loader.aborted span { width: 100%; background: #d97706; }
-    .block-body { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; }
-    .field { display: flex; flex-direction: column; gap: 6px; }
-    .field > strong { font-size: 13px; }
-    .error-text { font-size: 12px; color: #991b1b; }
-    @keyframes slide { from { margin-left: -40%; } to { margin-left: 100%; } }
-    @media (max-width: 980px) { .block-body { grid-template-columns: 1fr; } }
+    :root { color-scheme: light; }
+    body { font-family: Arial, sans-serif; margin: 0; background: #f4f5f7; color: #1f2937; }
+    .container { max-width: 1300px; margin: 0 auto; padding: 16px; }
+    .card { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+    h1,h2,h3 { margin-top: 0; }
+    textarea,input,button { font: inherit; }
+    textarea,input[type="text"],input[type="number"],input[type="password"] {
+      width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px;
+    }
+    textarea { min-height: 110px; resize: vertical; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .row > * { flex: 1; }
+    .tight { flex: 0 0 auto; }
+    button { background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    button.alt { background: #4b5563; }
+    button.warn { background: #dc2626; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .status-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:8px; }
+    .status-chip { background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:8px; }
+    .muted { color:#6b7280; font-size: 13px; }
+    .blocks { display: grid; gap: 12px; }
+    .block { border:1px solid #cbd5e1; border-radius:10px; padding: 10px; background:#fff; }
+    .block-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
+    .badge { padding:2px 8px; border-radius:999px; font-size:12px; background:#e5e7eb; }
+    .badge.ok { background:#dcfce7; }
+    .badge.err { background:#fee2e2; }
+    .badge.run { background:#dbeafe; }
+    .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .progress { width:170px; height: 8px; border-radius: 999px; background:#e5e7eb; overflow:hidden; }
+    .progress > div { width:45%; height:100%; background:#3b82f6; animation: move 1s linear infinite; }
+    @keyframes move { from{ transform: translateX(-110%);} to{ transform:translateX(240%);} }
+    .err-text { color:#b91c1c; font-size: 13px; white-space: pre-wrap; }
+    @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-  <div class="app">
-    <div class="panel">
-      <h1>Variante C – PHP + OpenRouter + Web-UI</h1>
-      <p class="small">Session-Cookie ist HttpOnly und bei HTTPS zusätzlich Secure. Für echten Schutz bitte HTTPS nutzen.</p>
+<div class="container">
+  <h1>OCR Korrektur Tool (Variante C)</h1>
 
-      <label for="sourceInput"><strong>Gesamter Text (Input)</strong></label>
-      <textarea id="sourceInput" placeholder="Sehr langen Text hier einfügen (bis ca. 200.000 Zeichen)..."></textarea>
+  <div class="card">
+    <h3>Systemstatus</h3>
+    <div class="status-grid">
+      <div class="status-chip">API erreichbar: <strong id="apiReach">unbekannt</strong></div>
+      <div class="status-chip">Key-Quelle: <strong id="keySource"><?= $hasEnvKey ? 'ENV' : 'Session/User Input' ?></strong></div>
+      <div class="status-chip">Key gespeichert: <strong id="keyStored"><?= ($hasEnvKey || $hasSessionKey) ? 'ja' : 'nein' ?></strong></div>
+      <div class="status-chip">Session aktiv: <strong id="sessionState"><?= session_status() === PHP_SESSION_ACTIVE ? 'ja' : 'nein' ?></strong></div>
+    </div>
+    <p class="muted" id="statusMessage">Bereit.</p>
+  </div>
 
-      <div class="row" style="margin-top: 10px;">
-        <label>Chunk-Größe <input id="chunkSize" type="number" min="500" step="500" value="10000"></label>
-        <label>Model-Feld <input id="modelInput" type="text" value="https://openrouter.ai/arcee-ai/trinity-large-preview:free"></label>
-        <label id="apiKeyWrap" <?= $hasEnvKey ? 'style="display:none"' : '' ?>>OpenRouter API Key <input id="apiKeyInput" type="password" autocomplete="off" placeholder="or-..."></label>
-        <button id="saveKeyBtn" <?= $hasEnvKey ? 'disabled' : '' ?>>Key speichern</button>
-        <button id="clearKeyBtn">Key löschen</button>
+  <div class="card">
+    <label for="fullText"><strong>Gesamter Text</strong></label>
+    <textarea id="fullText" placeholder="Text hier einfügen..."></textarea>
+
+    <div class="row" style="margin-top:10px;">
+      <div>
+        <label for="chunkSize"><strong>Chunk size</strong></label>
+        <input id="chunkSize" type="number" min="500" step="100" value="10000">
       </div>
-
-      <div class="row" style="margin-top: 10px;">
-        <button id="splitBtn">Aufteilen</button>
-        <button id="splitAndCorrectBtn">Aufteilen &amp; Korrigieren</button>
-        <button id="stopAllBtn">Stop All</button>
-        <button id="mergeBtn">Alles zusammenfügen (korrigiert)</button>
-        <button id="fluidBtn">Flüssigen Text exportieren (korrigiert)</button>
-        <button id="copyBtn">In Zwischenablage kopieren</button>
-        <button id="resetBtn">Reset</button>
+      <div>
+        <label for="modelInput"><strong>Model input (URL oder Model-ID)</strong></label>
+        <input id="modelInput" type="text" value="https://openrouter.ai/arcee-ai/trinity-large-preview:free">
       </div>
-
-      <p id="globalMsg" class="small"></p>
-      <p id="globalProgress" class="statusline">0 / 0 Blöcke fertig • Fehler: 0 • läuft: 0</p>
     </div>
 
-    <div id="blocksContainer"></div>
+    <div class="row" style="margin-top:10px;">
+      <div>
+        <label for="apiKey"><strong>OpenRouter API Key</strong></label>
+        <input id="apiKey" type="password" placeholder="sk-or-v1-..." <?= $hasEnvKey ? 'disabled' : '' ?>>
+      </div>
+      <button class="tight" id="btnSaveKey" <?= $hasEnvKey ? 'disabled' : '' ?>>Key speichern</button>
+      <button class="tight alt" id="btnDeleteKey" <?= $hasEnvKey ? 'disabled' : '' ?>>Key löschen</button>
+      <button class="tight alt" id="btnPing">Test API</button>
+    </div>
+    <?php if ($hasEnvKey): ?>
+      <p class="muted">Key kommt aus ENV (OPENROUTER_API_KEY). Manuelle Eingabe ist deaktiviert.</p>
+    <?php endif; ?>
 
-    <div class="panel">
-      <h2>Export (flüssiger korrigierter Text)</h2>
-      <textarea id="exportOutput" placeholder="Hier erscheint der flüssige Export..."></textarea>
-      <p id="exportStats" class="small">Zeichenanzahl: 0</p>
+    <div class="row" style="margin-top:10px;">
+      <button id="btnSplit">Aufteilen</button>
+      <button id="btnSplitCorrect">Aufteilen &amp; Korrigieren</button>
+      <button id="btnStop" class="warn">Stop All</button>
+      <button id="btnReset" class="alt">Reset</button>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <div class="status-chip">Global: <strong id="globalStats">0/0 fertig, Fehler: 0, läuft: 0</strong></div>
     </div>
   </div>
 
-  <script>
-    const csrfToken = <?= json_encode($_SESSION['csrf_token']) ?>;
-    const hasEnvKey = <?= $hasEnvKey ? 'true' : 'false' ?>;
+  <div class="card">
+    <h3>Blöcke</h3>
+    <div id="blocks" class="blocks"></div>
+  </div>
 
-    const STATUS = {
-      WAITING: 'wartet',
-      QUEUED: 'in Warteschlange',
-      SENDING: 'sendet…',
-      RESPONDING: 'antwortet…',
-      DONE: 'fertig',
-      ABORTED: 'abgebrochen',
-      ERROR: 'Fehler',
-    };
+  <div class="card">
+    <h3>Export</h3>
+    <div class="row">
+      <button id="btnMerge">Alles zusammenfügen (korrigiert)</button>
+      <button id="btnFluid">Flüssigen Text exportieren</button>
+      <button id="btnCopy" class="alt">Copy to clipboard</button>
+    </div>
+    <textarea id="exportText" style="margin-top:10px; min-height:180px;"></textarea>
+  </div>
+</div>
 
-    const state = {
-      blocks: [],
-      queue: [],
-      queueSet: new Set(),
-      active: 0,
-      maxConcurrency: 2,
-      controllers: new Map(),
-      stopRequested: false,
-    };
+<script>
+window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 
-    const els = {
-      sourceInput: document.getElementById('sourceInput'),
-      chunkSize: document.getElementById('chunkSize'),
-      modelInput: document.getElementById('modelInput'),
-      apiKeyInput: document.getElementById('apiKeyInput'),
-      globalMsg: document.getElementById('globalMsg'),
-      globalProgress: document.getElementById('globalProgress'),
-      blocksContainer: document.getElementById('blocksContainer'),
-      exportOutput: document.getElementById('exportOutput'),
-      exportStats: document.getElementById('exportStats'),
-    };
+(() => {
+  const state = {
+    blocks: [],
+    queue: [],
+    running: new Map(),
+    maxConcurrent: 2,
+    stopRequested: false
+  };
 
-    function showMsg(msg, isError = false) {
-      els.globalMsg.textContent = msg;
-      els.globalMsg.style.color = isError ? '#991b1b' : '#065f46';
-    }
+  const el = {
+    fullText: document.getElementById('fullText'),
+    chunkSize: document.getElementById('chunkSize'),
+    modelInput: document.getElementById('modelInput'),
+    apiKey: document.getElementById('apiKey'),
+    blocks: document.getElementById('blocks'),
+    exportText: document.getElementById('exportText'),
+    globalStats: document.getElementById('globalStats'),
+    apiReach: document.getElementById('apiReach'),
+    keyStored: document.getElementById('keyStored'),
+    statusMessage: document.getElementById('statusMessage')
+  };
 
-    function splitIntoChunks(text, chunkSize) {
-      const chunks = [];
-      for (let i = 0; i < text.length; i += chunkSize) {
-        chunks.push(text.slice(i, i + chunkSize));
-      }
-      return chunks;
-    }
+  const safeError = (msg) => ({ ok: false, error: { message: msg || 'Unbekannter Fehler' }, httpStatus: 0 });
 
-    function debounce(fn, wait = 300) {
-      let t;
-      return (...args) => {
-        clearTimeout(t);
-        t = setTimeout(() => fn(...args), wait);
-      };
-    }
-
-    function makeBlock(text, idx) {
-      return {
-        id: idx,
-        originalText: text,
-        correctedText: '',
-        status: STATUS.WAITING,
-        error: '',
-        startedAt: 0,
-        elapsedMs: 0,
-        debouncedRequeue: null,
-        refs: null,
-      };
-    }
-
-    function setBlockStatus(block, next, error = '') {
-      block.status = next;
-      block.error = error;
-      renderBlock(block.id);
-      updateGlobalStats();
-    }
-
-    function queueBlock(id) {
-      if (state.queueSet.has(id)) return;
-      const block = state.blocks[id];
-      if (!block) return;
-      state.queue.push(id);
-      state.queueSet.add(id);
-      if (![STATUS.SENDING, STATUS.RESPONDING].includes(block.status)) {
-        setBlockStatus(block, STATUS.QUEUED);
-      }
-      processQueue();
-    }
-
-    function extractErrorMessage(errorObj) {
-      const status = Number(errorObj?.httpStatus || 0);
-      const msg = errorObj?.errorObj?.message || errorObj?.message || 'Unbekannter Fehler';
-      if (status === 401 || status === 403) return 'API-Key ungültig oder fehlt.';
-      if (status === 429) return 'Rate Limit erreicht. Bitte Retry nutzen.';
-      if (status >= 500) return 'OpenRouter-Fehler (5xx), später erneut versuchen.';
-      return msg;
-    }
-
-    async function postApi(action, payload, signal) {
-      const res = await fetch(`api.php?action=${encodeURIComponent(action)}`, {
+  async function apiCall(action, data = {}) {
+    const payload = { action, csrfToken: window.CSRF_TOKEN, ...data };
+    try {
+      const res = await fetch('./api.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csrfToken, ...payload }),
-        signal,
+        credentials: 'same-origin',
+        cache: 'no-store',
+        body: JSON.stringify(payload),
+        signal: data.__signal
       });
-      const data = await res.json().catch(() => ({ ok: false, error: { message: 'Ungültige JSON-Antwort.' } }));
-      if (!res.ok || !data.ok) {
-        const err = new Error(data?.error?.message || `HTTP ${res.status}`);
-        err.httpStatus = data.httpStatus || res.status;
-        err.errorObj = data.error || { message: err.message };
-        throw err;
-      }
-      return data;
-    }
 
-    async function correctSingleBlock(id) {
-      const block = state.blocks[id];
-      if (!block) return;
-      const controller = new AbortController();
-      state.controllers.set(id, controller);
-      block.startedAt = Date.now();
-      setBlockStatus(block, STATUS.SENDING);
-
+      const text = await res.text();
+      let parsed;
       try {
-        setTimeout(() => {
-          if (state.controllers.get(id) === controller && state.blocks[id]?.status === STATUS.SENDING) {
-            setBlockStatus(block, STATUS.RESPONDING);
-          }
-        }, 250);
-
-        const data = await postApi('correctBlock', {
-          blockId: id,
-          chunkText: block.originalText,
-          modelInput: els.modelInput.value,
-        }, controller.signal);
-
-        block.correctedText = data.correctedText || '';
-        block.elapsedMs = Number(data?.meta?.elapsedMs || (Date.now() - block.startedAt));
-        setBlockStatus(block, STATUS.DONE);
-      } catch (error) {
-        if (controller.signal.aborted || state.stopRequested) {
-          block.elapsedMs = Date.now() - block.startedAt;
-          setBlockStatus(block, STATUS.ABORTED);
-        } else {
-          block.elapsedMs = Date.now() - block.startedAt;
-          setBlockStatus(block, STATUS.ERROR, extractErrorMessage(error));
-        }
-      } finally {
-        state.controllers.delete(id);
+        parsed = JSON.parse(text);
+      } catch {
+        console.error('[apiCall] JSON parse error', { action, blockId: data.blockId ?? null, httpStatus: res.status });
+        return safeError('Ungültige Serverantwort (kein JSON).');
       }
+
+      if (!res.ok || !parsed.ok) {
+        console.error('[apiCall] request failed', {
+          action,
+          blockId: data.blockId ?? null,
+          httpStatus: res.status,
+          message: parsed?.error?.message || 'Fehler'
+        });
+      }
+
+      return { ...parsed, httpStatus: parsed.httpStatus ?? res.status };
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        return { ok: false, aborted: true, error: { message: 'Abgebrochen' }, httpStatus: 0 };
+      }
+      console.error('[apiCall] network error', { action, blockId: data.blockId ?? null, message: err.message });
+      return safeError('Netzwerkfehler: ' + err.message);
     }
+  }
 
-    function processQueue() {
-      while (state.active < state.maxConcurrency && state.queue.length > 0) {
-        const id = state.queue.shift();
-        state.queueSet.delete(id);
-        const block = state.blocks[id];
-        if (!block || state.stopRequested) continue;
+  function statusClass(s) {
+    if (s === 'fertig') return 'ok';
+    if (s === 'Fehler' || s === 'abgebrochen') return 'err';
+    if (['sendet…','antwortet…','in Warteschlange'].includes(s)) return 'run';
+    return '';
+  }
 
-        state.active += 1;
-        correctSingleBlock(id)
-          .finally(() => {
-            state.active -= 1;
-            renderBlock(id);
-            updateGlobalStats();
-            processQueue();
-          });
-      }
-      updateGlobalStats();
-    }
+  function updateGlobalStats() {
+    const total = state.blocks.length;
+    const done = state.blocks.filter(b => b.status === 'fertig').length;
+    const errors = state.blocks.filter(b => b.status === 'Fehler').length;
+    const running = state.running.size;
+    el.globalStats.textContent = `${done}/${total} fertig, Fehler: ${errors}, läuft: ${running}`;
+  }
 
-    function stopAll() {
-      state.stopRequested = true;
-      state.queue.length = 0;
-      state.queueSet.clear();
+  function renderBlocks() {
+    el.blocks.innerHTML = '';
+    state.blocks.forEach((b, i) => {
+      const card = document.createElement('div');
+      card.className = 'block';
+      const elapsed = b.startTime ? ((Date.now() - b.startTime) / 1000).toFixed(1) + 's' : '-';
+      card.innerHTML = `
+        <div class="block-head">
+          <strong>Block ${i + 1}</strong>
+          <span>inputChars: ${b.originalText.length}</span>
+          <span>outputChars: ${b.correctedText.length}</span>
+          <span class="badge ${statusClass(b.status)}">${b.status}</span>
+          <span>HTTP: ${b.httpStatus ?? '-'}</span>
+          <span>Zeit: ${elapsed}</span>
+          ${['sendet…','antwortet…'].includes(b.status) ? '<div class="progress"><div></div></div>' : ''}
+          <button data-retry="${b.id}" class="alt tight">Retry</button>
+        </div>
+        <div class="grid-2">
+          <div>
+            <label>Original</label>
+            <textarea data-original="${b.id}">${escapeHtml(b.originalText)}</textarea>
+          </div>
+          <div>
+            <label>Korrigiert</label>
+            <textarea data-corrected="${b.id}">${escapeHtml(b.correctedText)}</textarea>
+          </div>
+        </div>
+        <div class="err-text">${escapeHtml(b.errorMessage || '')}</div>
+      `;
+      el.blocks.appendChild(card);
+    });
 
-      for (const [id, controller] of state.controllers.entries()) {
-        controller.abort();
-        const block = state.blocks[id];
-        if (block) setBlockStatus(block, STATUS.ABORTED);
-      }
-
-      state.blocks.forEach((b) => {
-        if (b.status === STATUS.QUEUED) setBlockStatus(b, STATUS.ABORTED);
+    document.querySelectorAll('[data-original]').forEach(t => {
+      t.addEventListener('input', (e) => {
+        const id = Number(e.target.dataset.original);
+        const block = state.blocks.find(x => x.id === id);
+        if (block) block.originalText = e.target.value;
       });
+    });
 
-      setTimeout(() => { state.stopRequested = false; }, 50);
-      updateGlobalStats();
-    }
-
-    function createBlockDom(block) {
-      const wrap = document.createElement('div');
-      wrap.className = 'block';
-
-      const header = document.createElement('div');
-      header.className = 'block-head';
-
-      const leftMeta = document.createElement('div');
-      const rightMeta = document.createElement('div');
-
-      const badge = document.createElement('span');
-      badge.className = 'badge waiting';
-
-      const retryBtn = document.createElement('button');
-      retryBtn.textContent = 'Retry';
-      retryBtn.addEventListener('click', () => queueBlock(block.id));
-
-      header.append(leftMeta, rightMeta);
-      rightMeta.append(badge, retryBtn);
-
-      const loader = document.createElement('div');
-      loader.className = 'loader';
-      loader.innerHTML = '<span></span>';
-
-      const errorText = document.createElement('div');
-      errorText.className = 'error-text';
-
-      const body = document.createElement('div');
-      body.className = 'block-body';
-
-      const left = document.createElement('div');
-      left.className = 'field';
-      const leftTitle = document.createElement('strong');
-      leftTitle.textContent = 'Original';
-      const leftArea = document.createElement('textarea');
-      leftArea.value = block.originalText;
-      left.append(leftTitle, leftArea);
-
-      const right = document.createElement('div');
-      right.className = 'field';
-      const rightTitle = document.createElement('strong');
-      rightTitle.textContent = 'Korrektur';
-      const rightArea = document.createElement('textarea');
-      right.append(rightTitle, rightArea);
-
-      body.append(left, right);
-      wrap.append(header, loader, errorText, body);
-
-      block.debouncedRequeue = debounce(() => {
-        queueBlock(block.id);
-      }, 300);
-
-      leftArea.addEventListener('input', (e) => {
-        block.originalText = e.target.value;
-        setBlockStatus(block, STATUS.WAITING);
-        block.debouncedRequeue();
-        renderBlock(block.id);
+    document.querySelectorAll('[data-corrected]').forEach(t => {
+      t.addEventListener('input', (e) => {
+        const id = Number(e.target.dataset.corrected);
+        const block = state.blocks.find(x => x.id === id);
+        if (block) block.correctedText = e.target.value;
+        updateGlobalStats();
       });
+    });
 
-      rightArea.addEventListener('input', (e) => {
-        block.correctedText = e.target.value;
-        renderBlock(block.id);
+    document.querySelectorAll('[data-retry]').forEach(btn => {
+      btn.addEventListener('click', () => enqueueRetry(Number(btn.dataset.retry)));
+    });
+
+    updateGlobalStats();
+  }
+
+  function escapeHtml(v) {
+    return (v || '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]));
+  }
+
+  function splitText() {
+    const text = el.fullText.value || '';
+    const size = Math.max(500, Number(el.chunkSize.value) || 10000);
+    const blocks = [];
+    for (let i = 0, id = 1; i < text.length; i += size, id++) {
+      blocks.push({
+        id,
+        originalText: text.slice(i, i + size),
+        correctedText: '',
+        status: 'wartet',
+        errorMessage: '',
+        httpStatus: null,
+        startTime: null
       });
-
-      block.refs = { wrap, leftMeta, rightMeta, badge, retryBtn, loader, errorText, leftArea, rightArea };
-      renderBlock(block.id);
-      return wrap;
     }
+    state.blocks = blocks;
+    state.queue = [];
+    state.running.clear();
+    state.stopRequested = false;
+    renderBlocks();
+  }
 
-    function statusBadgeClass(status) {
-      if ([STATUS.QUEUED, STATUS.SENDING, STATUS.RESPONDING].includes(status)) return 'running';
-      if (status === STATUS.DONE) return 'done';
-      if (status === STATUS.ERROR) return 'error';
-      if (status === STATUS.ABORTED) return 'aborted';
-      return 'waiting';
-    }
+  function enqueueAll() {
+    state.queue = state.blocks.map(b => ({ blockId: b.id, type: 'correct' }));
+    state.blocks.forEach(b => { b.status = 'in Warteschlange'; b.errorMessage = ''; b.httpStatus = null; });
+    renderBlocks();
+    drainQueue();
+  }
 
-    function loaderClass(status) {
-      if ([STATUS.QUEUED, STATUS.SENDING, STATUS.RESPONDING].includes(status)) return 'running';
-      if (status === STATUS.DONE) return 'done';
-      if (status === STATUS.ERROR) return 'error';
-      if (status === STATUS.ABORTED) return 'aborted';
-      return '';
-    }
+  function enqueueRetry(blockId) {
+    const b = state.blocks.find(x => x.id === blockId);
+    if (!b) return;
+    b.status = 'in Warteschlange';
+    b.errorMessage = '';
+    b.httpStatus = null;
+    state.queue.push({ blockId, type: 'correct' });
+    renderBlocks();
+    drainQueue();
+  }
 
-    function renderBlock(id) {
-      const block = state.blocks[id];
-      if (!block || !block.refs) return;
-      const inChars = block.originalText.length;
-      const outChars = block.correctedText.length;
-      const sec = block.elapsedMs > 0 ? `${(block.elapsedMs / 1000).toFixed(1)}s` : '—';
+  async function runTask(task) {
+    const block = state.blocks.find(b => b.id === task.blockId);
+    if (!block) return;
+    const controller = new AbortController();
+    state.running.set(task.blockId, controller);
 
-      block.refs.leftMeta.textContent = `Block #${id + 1} • Input: ${inChars} • Output: ${outChars}`;
-      block.refs.badge.textContent = `${block.status} • ${sec}`;
-      block.refs.badge.className = `badge ${statusBadgeClass(block.status)}`;
-      block.refs.loader.className = `loader ${loaderClass(block.status)}`;
-      block.refs.errorText.textContent = block.error || '';
-      block.refs.rightArea.value = block.correctedText;
-      block.refs.retryBtn.style.display = block.status === STATUS.ERROR ? 'inline-block' : 'none';
-    }
+    block.status = 'sendet…';
+    block.startTime = Date.now();
+    block.errorMessage = '';
+    block.httpStatus = null;
+    renderBlocks();
 
-    function updateGlobalStats() {
-      const done = state.blocks.filter((b) => b.status === STATUS.DONE).length;
-      const errors = state.blocks.filter((b) => b.status === STATUS.ERROR).length;
-      const running = state.blocks.filter((b) => [STATUS.QUEUED, STATUS.SENDING, STATUS.RESPONDING].includes(b.status)).length;
-      els.globalProgress.textContent = `${done} / ${state.blocks.length} Blöcke fertig • Fehler: ${errors} • läuft: ${running}`;
-    }
-
-    function buildBlocks(correctImmediately = false) {
-      stopAll();
-      state.blocks = [];
-      els.blocksContainer.innerHTML = '';
-
-      const source = els.sourceInput.value;
-      const chunkSize = Math.max(500, Number(els.chunkSize.value) || 10000);
-      const chunks = splitIntoChunks(source, chunkSize);
-      const frag = document.createDocumentFragment();
-
-      chunks.forEach((chunk, idx) => {
-        const block = makeBlock(chunk, idx);
-        state.blocks.push(block);
-        frag.append(createBlockDom(block));
-      });
-
-      els.blocksContainer.append(frag);
-      showMsg(`Aufgeteilt in ${state.blocks.length} Blöcke.`);
-      updateGlobalStats();
-
-      if (correctImmediately) {
-        state.blocks.forEach((block) => queueBlock(block.id));
-      }
-    }
-
-    function mergedCorrectedText() {
-      return state.blocks.map((b) => b.correctedText || '').join('');
-    }
-
-    // Export-Heuristik: Layout-Zeilenumbrüche entfernen, Absätze erhalten.
-    function toFluidText(input) {
-      let text = input.replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n');
-      const paragraphs = text.split(/\n\n+/);
-      const outParagraphs = [];
-
-      const bulletRe = /^\s*(?:[-•*]|\d+[.)])\s+/;
-      const allCapsRe = /^[^a-zäöüß]*[A-ZÄÖÜ][A-ZÄÖÜ0-9\s,.;:!?()/-]+$/;
-      const specialLineRe = /(ISBN|https?:\/\/|www\.|©)/i;
-
-      for (const para of paragraphs) {
-        const lines = para.split('\n').map((l) => l.trim()).filter(Boolean);
-        if (lines.length === 0) continue;
-
-        let buffer = lines[0];
-        for (let i = 1; i < lines.length; i += 1) {
-          const prev = buffer;
-          const next = lines[i];
-
-          const prevWords = prev.split(/\s+/).filter(Boolean).length;
-          const nextStartsLower = /^[a-zäöüß]/u.test(next);
-          const prevLooksHeading = allCapsRe.test(prev) || prevWords <= 3 || bulletRe.test(prev);
-          const nextIsBullet = bulletRe.test(next);
-          const preserveByColon = /:$/.test(prev) && !nextStartsLower;
-          const preserveSpecial = specialLineRe.test(prev) || specialLineRe.test(next);
-
-          if (/-$/.test(prev) && /^\p{L}/u.test(next)) {
-            buffer = prev.slice(0, -1) + next;
-            continue;
-          }
-
-          if (prevLooksHeading || nextIsBullet || preserveByColon || preserveSpecial) {
-            outParagraphs.push(buffer);
-            buffer = next;
-            continue;
-          }
-
-          buffer = `${prev} ${next}`;
-        }
-
-        outParagraphs.push(buffer);
-      }
-
-      return outParagraphs.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
-    }
-
-    document.getElementById('saveKeyBtn').addEventListener('click', async () => {
-      if (hasEnvKey) {
-        showMsg('OPENROUTER_API_KEY ist serverseitig gesetzt.');
-        return;
-      }
-
-      const apiKey = els.apiKeyInput.value.trim();
-      if (!apiKey) {
-        showMsg('Bitte API-Key eingeben.', true);
-        return;
-      }
-
-      try {
-        await postApi('setApiKey', { apiKey });
-        els.apiKeyInput.value = '';
-        showMsg('API-Key wurde in der Session gespeichert.');
-      } catch (error) {
-        showMsg(error.message, true);
-      }
+    const result = await apiCall('correctBlock', {
+      blockId: block.id,
+      chunkText: block.originalText,
+      modelInput: el.modelInput.value,
+      __signal: controller.signal
     });
 
-    document.getElementById('clearKeyBtn').addEventListener('click', async () => {
-      try {
-        await postApi('clearApiKey', {});
-        showMsg('Session-Key gelöscht.');
-      } catch (error) {
-        showMsg(error.message, true);
+    if (result.aborted || state.stopRequested) {
+      block.status = 'abgebrochen';
+      block.errorMessage = 'Request wurde abgebrochen.';
+      block.httpStatus = result.httpStatus ?? 0;
+    } else if (!result.ok) {
+      block.status = 'Fehler';
+      block.errorMessage = result?.error?.message || 'Unbekannter Fehler';
+      block.httpStatus = result.httpStatus ?? 0;
+    } else {
+      block.status = 'fertig';
+      block.correctedText = result.correctedText || '';
+      block.httpStatus = result.httpStatus ?? 200;
+    }
+
+    state.running.delete(task.blockId);
+    renderBlocks();
+    drainQueue();
+  }
+
+  function drainQueue() {
+    if (state.stopRequested) return;
+    while (state.running.size < state.maxConcurrent && state.queue.length > 0) {
+      const next = state.queue.shift();
+      const block = state.blocks.find(b => b.id === next.blockId);
+      if (!block || block.status === 'fertig') continue;
+      block.status = 'antwortet…';
+      renderBlocks();
+      runTask(next);
+    }
+  }
+
+  function stopAll() {
+    state.stopRequested = true;
+    state.queue = [];
+    for (const [id, controller] of state.running.entries()) {
+      controller.abort();
+      const b = state.blocks.find(x => x.id === id);
+      if (b) b.status = 'abgebrochen';
+    }
+    state.running.clear();
+    renderBlocks();
+  }
+
+  function resetAll() {
+    stopAll();
+    state.blocks = [];
+    el.fullText.value = '';
+    el.exportText.value = '';
+    el.statusMessage.textContent = 'Zurückgesetzt.';
+    renderBlocks();
+  }
+
+  function mergeCorrected() {
+    el.exportText.value = state.blocks.map(b => b.correctedText || b.originalText).join('\n\n');
+  }
+
+  function postProcessToFluidText(text) {
+    let t = (text || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n');
+    t = t.replace(/-\n(?=[a-zäöüß])/gi, '');
+    const lines = t.split('\n');
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const cur = lines[i].trimEnd();
+      const next = (lines[i + 1] || '').trim();
+      if (!cur) { out.push(''); continue; }
+      const protectedLine = /^(\s*[-*•]|\s*\d+[.)]|https?:\/\/|www\.|ISBN|©)/i.test(cur) || /^[A-ZÄÖÜ\d\s]{4,}$/.test(cur);
+      if (protectedLine || !next) { out.push(cur); continue; }
+      if (/[.!?:;]$/.test(cur)) {
+        out.push(cur);
+      } else {
+        lines[i + 1] = cur + ' ' + next;
       }
-    });
+    }
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
 
-    document.getElementById('splitBtn').addEventListener('click', () => buildBlocks(false));
-    document.getElementById('splitAndCorrectBtn').addEventListener('click', () => buildBlocks(true));
-    document.getElementById('stopAllBtn').addEventListener('click', () => {
-      stopAll();
-      showMsg('Alle laufenden Requests wurden abgebrochen.');
-    });
+  async function pingApi() {
+    el.statusMessage.textContent = 'Teste API...';
+    const res = await apiCall('ping', {});
+    if (res.ok) {
+      el.apiReach.textContent = 'ja';
+      el.statusMessage.textContent = `API ok (${res.time || '-'})`;
+    } else {
+      el.apiReach.textContent = 'nein';
+      el.statusMessage.textContent = `API Fehler: ${res?.error?.message || 'Unbekannt'}`;
+    }
+  }
 
-    document.getElementById('mergeBtn').addEventListener('click', () => {
-      const merged = mergedCorrectedText();
-      els.exportOutput.value = merged;
-      els.exportStats.textContent = `Zeichenanzahl: ${merged.length}`;
-      showMsg('Korrigierte Blöcke wurden zusammengefügt.');
-    });
+  document.getElementById('btnSplit').addEventListener('click', splitText);
+  document.getElementById('btnSplitCorrect').addEventListener('click', () => {
+    splitText();
+    enqueueAll();
+  });
+  document.getElementById('btnStop').addEventListener('click', stopAll);
+  document.getElementById('btnReset').addEventListener('click', resetAll);
+  document.getElementById('btnMerge').addEventListener('click', mergeCorrected);
+  document.getElementById('btnFluid').addEventListener('click', () => {
+    mergeCorrected();
+    el.exportText.value = postProcessToFluidText(el.exportText.value);
+  });
+  document.getElementById('btnCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(el.exportText.value); el.statusMessage.textContent = 'In Zwischenablage kopiert.'; }
+    catch { el.statusMessage.textContent = 'Kopieren fehlgeschlagen.'; }
+  });
+  document.getElementById('btnPing').addEventListener('click', pingApi);
 
-    document.getElementById('fluidBtn').addEventListener('click', () => {
-      const fluid = toFluidText(mergedCorrectedText());
-      els.exportOutput.value = fluid;
-      els.exportStats.textContent = `Zeichenanzahl: ${fluid.length}`;
-      showMsg('Flüssiger Export erzeugt.');
-    });
+  document.getElementById('btnSaveKey').addEventListener('click', async () => {
+    const apiKey = el.apiKey.value.trim();
+    if (!apiKey) { el.statusMessage.textContent = 'Bitte API-Key eingeben.'; return; }
+    const res = await apiCall('saveKey', { apiKey });
+    el.statusMessage.textContent = res.ok ? 'Key gespeichert.' : `Fehler: ${res?.error?.message || 'unbekannt'}`;
+    el.keyStored.textContent = res.ok ? 'ja' : el.keyStored.textContent;
+  });
 
-    document.getElementById('copyBtn').addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(els.exportOutput.value);
-        showMsg('Export in Zwischenablage kopiert.');
-      } catch (error) {
-        showMsg('Kopieren fehlgeschlagen: ' + error.message, true);
-      }
-    });
+  document.getElementById('btnDeleteKey').addEventListener('click', async () => {
+    const res = await apiCall('deleteKey', {});
+    el.statusMessage.textContent = res.ok ? 'Key gelöscht.' : `Fehler: ${res?.error?.message || 'unbekannt'}`;
+    if (res.ok) {
+      el.keyStored.textContent = 'nein';
+      el.apiKey.value = '';
+    }
+  });
 
-    document.getElementById('resetBtn').addEventListener('click', () => {
-      stopAll();
-      state.blocks = [];
-      els.sourceInput.value = '';
-      els.blocksContainer.innerHTML = '';
-      els.exportOutput.value = '';
-      els.exportStats.textContent = 'Zeichenanzahl: 0';
-      updateGlobalStats();
-      showMsg('Zurückgesetzt.');
-    });
-  </script>
+  renderBlocks();
+})();
+</script>
 </body>
 </html>
