@@ -62,6 +62,100 @@ function deriveReferer(): string {
     return ($https ? 'https://' : 'http://') . $host;
 }
 
+function normalizeAndFluidifyText(string $text): string {
+    $text = str_replace(["\r\n", "\r"], "\n", $text);
+    $text = preg_replace("/\n{3,}/", "\n\n", $text) ?? $text;
+    $text = preg_replace('/-\n(?=\p{L})/u', '', $text) ?? $text;
+
+    $paragraphs = preg_split('/\n{2}/', $text) ?: [];
+    $resultParagraphs = [];
+
+    foreach ($paragraphs as $paragraph) {
+        $rawLines = preg_split('/\n/', $paragraph) ?: [];
+        $lines = [];
+        foreach ($rawLines as $line) {
+            $trimmed = trim($line);
+            if ($trimmed !== '') {
+                $lines[] = $trimmed;
+            }
+        }
+
+        if ($lines === []) {
+            continue;
+        }
+
+        $current = array_shift($lines);
+        $builtLines = [];
+
+        foreach ($lines as $line) {
+            if (shouldKeepLineBreak($current, $line)) {
+                $builtLines[] = $current;
+                $current = $line;
+                continue;
+            }
+
+            $current = rtrim($current) . ' ' . ltrim($line);
+        }
+        $builtLines[] = $current;
+
+        $resultParagraphs[] = implode("\n", array_map('cleanupWhitespace', $builtLines));
+    }
+
+    $normalized = implode("\n\n", $resultParagraphs);
+    $normalized = preg_replace("/\n{3,}/", "\n\n", $normalized) ?? $normalized;
+
+    return trim($normalized);
+}
+
+function shouldKeepLineBreak(string $currentLine, string $nextLine): bool {
+    return isListLine($currentLine)
+        || isListLine($nextLine)
+        || isMetaLine($currentLine)
+        || isMetaLine($nextLine)
+        || isHeadingLike($currentLine)
+        || isHeadingLikePair($currentLine, $nextLine);
+}
+
+function isListLine(string $line): bool {
+    return preg_match('/^\s*(?:[-*•–]|\d+[.)]|\(\d+\)|[IVXLCDM]+\.)\s+/u', $line) === 1;
+}
+
+function isMetaLine(string $line): bool {
+    return preg_match('/(?:ISBN|©|www\.|https?:\/\/|\S+@\S+|\b\d{5}\b|\b(?:München|Str\.?|Straße)\b)/iu', $line) === 1;
+}
+
+function isHeadingLike(string $line): bool {
+    $wordCount = preg_match_all('/\p{L}+/u', $line, $matches);
+    $wordCount = $wordCount === false ? 0 : $wordCount;
+    if ($wordCount > 0 && $wordCount <= 4) {
+        return true;
+    }
+
+    preg_match_all('/\p{L}/u', $line, $letters);
+    $letterChars = implode('', $letters[0] ?? []);
+    $len = mb_strlen($letterChars);
+    if ($len === 0) {
+        return false;
+    }
+
+    preg_match_all('/\p{Lu}/u', $letterChars, $uppers);
+    $upperCount = count($uppers[0] ?? []);
+
+    return ($upperCount / $len) > 0.7;
+}
+
+function isHeadingLikePair(string $currentLine, string $nextLine): bool {
+    return !preg_match('/[.!?:;]$/u', $currentLine) && (isHeadingLike($nextLine) || isHeadingLike($currentLine));
+}
+
+function cleanupWhitespace(string $line): string {
+    $line = preg_replace('/[ \t]+/u', ' ', $line) ?? $line;
+    $line = preg_replace('/\s+([,.;:!?])/u', '$1', $line) ?? $line;
+    $line = preg_replace('/([,.;:!?])(?!\s|$)/u', '$1 ', $line) ?? $line;
+    $line = preg_replace('/\s{2,}/u', ' ', $line) ?? $line;
+    return trim($line);
+}
+
 $body = getJsonBody();
 $action = $body['action'] ?? null;
 
@@ -131,11 +225,11 @@ $payload = [
     'messages' => [
         [
             'role' => 'system',
-            'content' => 'Du bist ein präziser deutscher Lektor. Korrigiere OCR/PDF-Fehler, Rechtschreibung und Grammatik. Erhalte Bedeutung. Gib NUR den korrigierten Text zurück.'
+            'content' => "Du bist ein präziser deutscher Lektor. Korrigiere OCR/PDF-Extraktionsfehler (falsche Leerzeichen in Wörtern, Ligaturen/Unicode-Artefakte), Rechtschreibung und Grammatik.\nWICHTIG: Entferne harte Zeilenumbrüche, die nur durch Layout entstanden sind, und forme flüssige Absätze.\nErhalte die Absatzstruktur: echte Absätze bleiben durch eine Leerzeile getrennt.\nErhalte Überschriften (z.B. komplett großgeschriebene Zeilen wie 'STEFANIE STAHL' oder sehr kurze Titel wie 'EINS') als eigene Zeilen.\nGib NUR den korrigierten Text zurück."
         ],
         [
             'role' => 'user',
-            'content' => "Korrigiere den folgenden Text. Gib NUR den korrigierten Text zurück:\n\n" . $chunkText
+            'content' => "Korrigiere den folgenden Text.\nEntferne Zeilenumbrüche innerhalb von Absätzen (Zeilen sollen zu vollständigen Sätzen/Absätzen zusammenlaufen), aber behalte echte Absatztrennungen (Leerzeilen) und Überschriftenzeilen.\nGib NUR den korrigierten Text zurück:\n\n" . $chunkText
         ],
     ],
     'temperature' => 0.1,
@@ -192,6 +286,7 @@ $correctedText = '';
 if (isset($decoded['choices'][0]['message']['content']) && is_string($decoded['choices'][0]['message']['content'])) {
     $correctedText = trim($decoded['choices'][0]['message']['content']);
 }
+$correctedText = normalizeAndFluidifyText($correctedText);
 if ($correctedText === '') {
     jsonResponse(['ok' => false, 'error' => ['message' => 'Leere Modellantwort'], 'httpStatus' => 200], 200);
 }

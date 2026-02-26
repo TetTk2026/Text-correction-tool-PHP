@@ -105,6 +105,13 @@ $hasSessionKey = isset($_SESSION['openrouter_api_key']) && $_SESSION['openrouter
     </div>
 
     <div class="row" style="margin-top:10px;">
+      <label class="tight" style="display:flex; gap:8px; align-items:center;">
+        <input type="checkbox" id="smoothLineBreaks" checked style="width:auto;">
+        Zeilenumbrüche glätten
+      </label>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
       <div class="status-chip">Global: <strong id="globalStats">0/0 fertig, Fehler: 0, läuft: 0</strong></div>
     </div>
   </div>
@@ -147,7 +154,8 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     globalStats: document.getElementById('globalStats'),
     apiReach: document.getElementById('apiReach'),
     keyStored: document.getElementById('keyStored'),
-    statusMessage: document.getElementById('statusMessage')
+    statusMessage: document.getElementById('statusMessage'),
+    smoothLineBreaks: document.getElementById('smoothLineBreaks')
   };
 
   const safeError = (msg) => ({ ok: false, error: { message: msg || 'Unbekannter Fehler' }, httpStatus: 0 });
@@ -336,7 +344,8 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
       block.httpStatus = result.httpStatus ?? 0;
     } else {
       block.status = 'fertig';
-      block.correctedText = result.correctedText || '';
+      const correctedText = result.correctedText || '';
+      block.correctedText = el.smoothLineBreaks.checked ? normalizeAndFluidifyText(correctedText) : correctedText;
       block.httpStatus = result.httpStatus ?? 200;
     }
 
@@ -382,25 +391,68 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     el.exportText.value = state.blocks.map(b => b.correctedText || b.originalText).join('\n\n');
   }
 
-  function postProcessToFluidText(text) {
+  function normalizeAndFluidifyText(text) {
     let t = (text || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n');
-    t = t.replace(/-\n(?=[a-zäöüß])/gi, '');
-    const lines = t.split('\n');
-    const out = [];
-    for (let i = 0; i < lines.length; i++) {
-      const cur = lines[i].trimEnd();
-      const next = (lines[i + 1] || '').trim();
-      if (!cur) { out.push(''); continue; }
-      const protectedLine = /^(\s*[-*•]|\s*\d+[.)]|https?:\/\/|www\.|ISBN|©)/i.test(cur) || /^[A-ZÄÖÜ\d\s]{4,}$/.test(cur);
-      if (protectedLine || !next) { out.push(cur); continue; }
-      if (/[.!?:;]$/.test(cur)) {
-        out.push(cur);
-      } else {
-        lines[i + 1] = cur + ' ' + next;
+    t = t.replace(/-\n(?=\p{L})/gu, '');
+
+    const paragraphs = t.split(/\n{2}/);
+    const outputParagraphs = [];
+
+    const isListLine = (line) => /^\s*(?:[-*•–]|\d+[.)]|\(\d+\)|[IVXLCDM]+\.)\s+/u.test(line);
+    const isMetaLine = (line) => /(?:ISBN|©|www\.|https?:\/\/|\S+@\S+|\b\d{5}\b|\b(?:München|Str\.?|Straße)\b)/iu.test(line);
+    const isHeadingLike = (line) => {
+      const words = (line.match(/\p{L}+/gu) || []).length;
+      if (words > 0 && words <= 4) return true;
+      const letters = (line.match(/\p{L}/gu) || []).join('');
+      if (!letters) return false;
+      const uppercase = (letters.match(/\p{Lu}/gu) || []).length;
+      return uppercase / letters.length > 0.7;
+    };
+    const isHeadingLikePair = (current, next) => !/[.!?:;]$/u.test(current) && (isHeadingLike(current) || isHeadingLike(next));
+    const shouldKeepLineBreak = (current, next) => (
+      isListLine(current) ||
+      isListLine(next) ||
+      isMetaLine(current) ||
+      isMetaLine(next) ||
+      isHeadingLike(current) ||
+      isHeadingLikePair(current, next)
+    );
+
+    const cleanupWhitespace = (line) => line
+      .replace(/[ \t]+/gu, ' ')
+      .replace(/\s+([,.;:!?])/gu, '$1')
+      .replace(/([,.;:!?])(?!\s|$)/gu, '$1 ')
+      .replace(/\s{2,}/gu, ' ')
+      .trim();
+
+    for (const paragraph of paragraphs) {
+      const lines = paragraph.split('\n').map((line) => line.trim()).filter(Boolean);
+      if (!lines.length) continue;
+
+      let current = lines[0];
+      const built = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const next = lines[i];
+        if (shouldKeepLineBreak(current, next)) {
+          built.push(current);
+          current = next;
+        } else {
+          current = `${current.trimEnd()} ${next.trimStart()}`;
+        }
       }
+
+      built.push(current);
+      outputParagraphs.push(built.map(cleanupWhitespace).join('\n'));
     }
-    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+    return outputParagraphs.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
   }
+
+  // Testfall:
+  // Input: "Zu ihren Spezialgebieten zählen die Themen Bindungsangst, Stärkung des\n\nSelbstwertgefühls ..."
+  // Output: Zeilen innerhalb eines Absatzes werden zusammengeführt, die Leerzeile als Absatztrenner bleibt erhalten.
+
 
   async function pingApi() {
     el.statusMessage.textContent = 'Teste API...';
@@ -424,7 +476,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   document.getElementById('btnMerge').addEventListener('click', mergeCorrected);
   document.getElementById('btnFluid').addEventListener('click', () => {
     mergeCorrected();
-    el.exportText.value = postProcessToFluidText(el.exportText.value);
+    el.exportText.value = normalizeAndFluidifyText(el.exportText.value);
   });
   document.getElementById('btnCopy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(el.exportText.value); el.statusMessage.textContent = 'In Zwischenablage kopiert.'; }
