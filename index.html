@@ -1,205 +1,653 @@
+<!--
+Nutzungsanleitung:
+1) Datei lokal im Browser öffnen (z. B. Doppelklick auf index.html).
+2) OpenRouter API Key oben eingeben (wird nur im Arbeitsspeicher gehalten).
+3) Modell als URL oder Model-ID eintragen (Default ist vorausgefüllt).
+4) Gesamten Text einfügen, Chunk-Größe wählen und auf "Aufteilen" oder "Aufteilen & Korrigieren" klicken.
+5) Einzelne Blöcke links bearbeiten: die Korrektur rechts wird automatisch (debounced) neu angefordert.
+6) Mit "Alles zusammenfügen (korrigiert)" den finalen Text erzeugen und optional in die Zwischenablage kopieren.
+-->
 <!doctype html>
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OCR Textkorrektur (Variante A: Frontend)</title>
+  <title>Variante 4 – Frontend OCR Korrektur via OpenRouter</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f3f4f6; color: #111827; }
-    .container { max-width: 1280px; margin: 0 auto; padding: 16px; }
-    .panel { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 12px; margin-bottom: 14px; }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    .toolbar input[type="number"] { width: 120px; padding: 6px; }
-    button { border: 1px solid #9ca3af; background: #e5e7eb; color: #111827; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
-    button:hover { background: #d1d5db; }
-    textarea { width: 100%; box-sizing: border-box; min-height: 170px; padding: 8px; border: 1px solid #9ca3af; border-radius: 8px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.4; }
-    .block { border: 1px solid #d1d5db; border-radius: 10px; margin-bottom: 14px; overflow: hidden; background: #fff; }
-    .block-header { display: flex; justify-content: space-between; gap: 10px; padding: 8px 10px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 13px; }
-    .block-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; }
-    .field { display: flex; flex-direction: column; gap: 6px; }
-    .field label { font-weight: 600; font-size: 13px; }
-    .status { font-size: 12px; font-weight: 600; }
-    .muted { color: #4b5563; font-size: 12px; }
-    @media (max-width: 900px) { .block-grid { grid-template-columns: 1fr; } }
+    :root {
+      --bg: #f3f4f6;
+      --card: #ffffff;
+      --text: #111827;
+      --muted: #4b5563;
+      --line: #d1d5db;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --danger: #dc2626;
+      --warn-bg: #fef3c7;
+      --warn-text: #92400e;
+      --ok: #166534;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    h1 { margin: 0 0 12px; font-size: 1.35rem; }
+    h2 { margin: 0 0 10px; font-size: 1.05rem; }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .sticky-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(4px);
+    }
+
+    .toolbar-grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 8px;
+      align-items: end;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 0.86rem; color: var(--muted); font-weight: 600; }
+
+    input[type="text"], input[type="password"], input[type="number"], textarea {
+      width: 100%;
+      border: 1px solid #9ca3af;
+      border-radius: 8px;
+      padding: 8px;
+      font: inherit;
+      background: #fff;
+      color: var(--text);
+    }
+
+    textarea {
+      min-height: 160px;
+      resize: vertical;
+      line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    button {
+      border: 1px solid #9ca3af;
+      background: #e5e7eb;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+    button.primary:hover { background: var(--primary-hover); }
+    button.stop { background: #fee2e2; border-color: #fca5a5; color: #7f1d1d; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .warn {
+      margin-top: 8px;
+      padding: 8px;
+      border: 1px solid #fcd34d;
+      border-radius: 8px;
+      background: var(--warn-bg);
+      color: var(--warn-text);
+      font-size: 0.9rem;
+    }
+
+    .status-line {
+      font-size: 0.86rem;
+      color: var(--muted);
+      margin-top: 8px;
+      min-height: 1.2em;
+    }
+
+    .block {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+
+    .block-header {
+      background: #f9fafb;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 8px 10px;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 0.88rem;
+    }
+
+    .meta { color: var(--muted); }
+
+    .state {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+
+    .state.waiting { background: #f3f4f6; color: #374151; border-color: #d1d5db; }
+    .state.running { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+    .state.done { background: #dcfce7; color: var(--ok); border-color: #86efac; }
+    .state.error { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+
+    .block-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .text-label {
+      font-size: 0.84rem;
+      color: var(--muted);
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .error-text {
+      color: #991b1b;
+      font-size: 0.82rem;
+      margin-top: 4px;
+      min-height: 1.1em;
+      white-space: pre-wrap;
+    }
+
+    .merged { min-height: 220px; }
+
+    @media (max-width: 980px) {
+      .toolbar-grid { grid-template-columns: 1fr; }
+      .block-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>OCR/PDF-Textkorrektur (Variante A: nur Frontend)</h1>
+    <h1>Variante 4 – Frontend OCR-Textkorrektur (OpenRouter)</h1>
 
-    <div class="panel">
-      <div class="toolbar">
-        <label>Chunk-Größe:
+    <div class="panel sticky-toolbar">
+      <div class="toolbar-grid">
+        <div class="field" style="grid-column: span 4;">
+          <label for="apiKey">OpenRouter API Key</label>
+          <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-v1-..." />
+        </div>
+
+        <div class="field" style="grid-column: span 5;">
+          <label for="modelInput">Model</label>
+          <input id="modelInput" type="text" value="https://openrouter.ai/arcee-ai/trinity-large-preview:free" spellcheck="false" />
+        </div>
+
+        <div class="field" style="grid-column: span 3;">
+          <label for="chunkSize">Chunk-Größe</label>
           <input id="chunkSize" type="number" min="1000" step="500" value="10000" />
-        </label>
+        </div>
+      </div>
+
+      <div class="btn-row">
         <button id="splitBtn">Aufteilen</button>
-        <button id="splitCorrectBtn">Aufteilen &amp; Korrigieren</button>
+        <button id="splitCorrectBtn" class="primary">Aufteilen &amp; Korrigieren</button>
+        <button id="stopBtn" class="stop">Stop</button>
         <button id="mergeBtn">Alles zusammenfügen (korrigiert)</button>
         <button id="copyBtn">In Zwischenablage kopieren</button>
         <button id="resetBtn">Reset</button>
       </div>
-      <p class="muted">Lokale Regex/Heuristik-Korrektur im Browser. Links editieren korrigiert rechts nach ~300ms neu.</p>
-      <textarea id="sourceInput" placeholder="Hier gesamten Rohtext einfügen (z. B. bis 200.000 Zeichen)..."></textarea>
+
+      <div class="warn">API-Key ist im Browser-Netzwerk sichtbar; nur für lokale/private Nutzung empfohlen.</div>
+      <div id="globalStatus" class="status-line"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Gesamter Text (Input)</h2>
+      <textarea id="sourceInput" placeholder="Hier den kompletten Text einfügen..."></textarea>
     </div>
 
     <div id="blocks"></div>
 
     <div class="panel">
       <h2>Zusammengefügter korrigierter Text</h2>
-      <textarea id="mergedOutput" placeholder="Hier erscheint der zusammengefügte korrigierte Text..."></textarea>
+      <textarea id="mergedOutput" class="merged" placeholder="Hier erscheint der zusammengefügte korrigierte Text..."></textarea>
     </div>
   </div>
 
   <script>
-    const state = { blocks: [] };
+    (function () {
+      const MAX_CONCURRENT = 2;
+      const DEBOUNCE_MS = 300;
 
-    const sourceInput = document.getElementById('sourceInput');
-    const chunkSizeInput = document.getElementById('chunkSize');
-    const blocksEl = document.getElementById('blocks');
-    const mergedOutput = document.getElementById('mergedOutput');
-
-    function splitIntoChunks(text, size) {
-      const chunks = [];
-      for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
-      return chunks;
-    }
-
-    function normalizeAndCorrect(text) {
-      let out = text || '';
-      out = out.normalize('NFKC');
-      out = out
-        .replace(/ﬀ/g, 'ff')
-        .replace(/ﬁ/g, 'fi')
-        .replace(/ﬂ/g, 'fl')
-        .replace(/ﬃ/g, 'ffi')
-        .replace(/ﬄ/g, 'ffl');
-      out = out.replace(/\r\n?/g, '\n');
-      out = out.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n');
-      out = out.replace(/\n{3,}/g, '\n\n');
-      out = out.replace(/([^\n])-\n(\p{L})/gu, '$1$2');
-      out = out.replace(/([^\n])\n([^\n])/g, '$1 $2');
-      out = out.replace(/(\p{L})[ \t]+(\p{L})/gu, '$1$2');
-      out = out.replace(/[ \t]{2,}/g, ' ');
-      out = out.replace(/[ \t]+([,.;:!?])/g, '$1');
-      out = out.replace(/([,.;:!?])([^\s\n])/g, '$1 $2');
-      return out.trim();
-    }
-
-    function debounce(fn, wait = 300) {
-      let t;
-      return (...args) => {
-        clearTimeout(t);
-        t = setTimeout(() => fn(...args), wait);
+      const el = {
+        apiKey: document.getElementById('apiKey'),
+        modelInput: document.getElementById('modelInput'),
+        chunkSize: document.getElementById('chunkSize'),
+        sourceInput: document.getElementById('sourceInput'),
+        blocks: document.getElementById('blocks'),
+        mergedOutput: document.getElementById('mergedOutput'),
+        globalStatus: document.getElementById('globalStatus'),
+        splitBtn: document.getElementById('splitBtn'),
+        splitCorrectBtn: document.getElementById('splitCorrectBtn'),
+        stopBtn: document.getElementById('stopBtn'),
+        mergeBtn: document.getElementById('mergeBtn'),
+        copyBtn: document.getElementById('copyBtn'),
+        resetBtn: document.getElementById('resetBtn')
       };
-    }
 
-    function makeBlocks(chunks, doCorrect) {
-      state.blocks = chunks.map((chunk) => ({
-        original: chunk,
-        corrected: doCorrect ? normalizeAndCorrect(chunk) : chunk,
-        status: doCorrect ? 'korrigiert' : 'wartet'
-      }));
-      renderBlocks();
-      mergedOutput.value = '';
-    }
+      const state = {
+        apiKey: '',
+        blocks: [],
+        running: 0,
+        queue: [],
+        queueSet: new Set(),
+        controllers: new Map(),
+        stopRequested: false,
+        jobVersion: 0
+      };
 
-    function renderBlocks() {
-      const fragment = document.createDocumentFragment();
+      function showStatus(message, isError) {
+        el.globalStatus.textContent = message || '';
+        el.globalStatus.style.color = isError ? '#991b1b' : '#4b5563';
+      }
 
-      state.blocks.forEach((block, idx) => {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'block';
+      function parseModelId(rawValue) {
+        const value = (rawValue || '').trim();
+        if (!value) return '';
+        if (value.startsWith('https://openrouter.ai/')) {
+          try {
+            const url = new URL(value);
+            const path = url.pathname.replace(/^\/+/, '');
+            return path || '';
+          } catch {
+            return '';
+          }
+        }
+        return value;
+      }
 
-        const header = document.createElement('div');
-        header.className = 'block-header';
+      function splitIntoChunks(text, chunkSize) {
+        const chunks = [];
+        for (let i = 0; i < text.length; i += chunkSize) {
+          chunks.push(text.slice(i, i + chunkSize));
+        }
+        return chunks;
+      }
 
-        const meta = document.createElement('strong');
-        meta.textContent = `Block ${idx + 1}`;
-        const info = document.createElement('span');
-        info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
-        const status = document.createElement('span');
-        status.className = 'status';
-        status.textContent = block.status;
+      function debounce(fn, wait) {
+        let timer = null;
+        return function debounced() {
+          const ctx = this;
+          const args = arguments;
+          clearTimeout(timer);
+          timer = setTimeout(function () { fn.apply(ctx, args); }, wait);
+        };
+      }
 
-        header.append(meta, info, status);
+      function createBlock(index, original) {
+        return {
+          id: index,
+          original,
+          corrected: '',
+          status: 'wartet',
+          error: '',
+          refs: null,
+          debouncedRequest: null
+        };
+      }
 
-        const grid = document.createElement('div');
-        grid.className = 'block-grid';
+      function statusClass(status) {
+        if (status === 'läuft') return 'running';
+        if (status === 'fertig') return 'done';
+        if (status === 'Fehler') return 'error';
+        return 'waiting';
+      }
 
-        const left = document.createElement('div');
-        left.className = 'field';
-        const leftLabel = document.createElement('label');
-        leftLabel.textContent = 'Original-Block (editierbar)';
-        const leftTa = document.createElement('textarea');
-        leftTa.value = block.original;
+      function buildBlocksUI() {
+        const frag = document.createDocumentFragment();
 
-        const right = document.createElement('div');
-        right.className = 'field';
-        const rightLabel = document.createElement('label');
-        rightLabel.textContent = 'Korrigierter Block (editierbar)';
-        const rightTa = document.createElement('textarea');
-        rightTa.value = block.corrected;
+        state.blocks.forEach((block, index) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'block';
 
-        const recompute = debounce(() => {
-          block.status = 'läuft…';
-          status.textContent = block.status;
-          block.original = leftTa.value;
-          block.corrected = normalizeAndCorrect(block.original);
+          const header = document.createElement('div');
+          header.className = 'block-header';
+
+          const leftMeta = document.createElement('div');
+          leftMeta.className = 'meta';
+
+          const stateBadge = document.createElement('span');
+          stateBadge.className = 'state ' + statusClass(block.status);
+
+          const grid = document.createElement('div');
+          grid.className = 'block-grid';
+
+          const leftCol = document.createElement('div');
+          const rightCol = document.createElement('div');
+
+          const leftLabel = document.createElement('div');
+          leftLabel.className = 'text-label';
+          leftLabel.textContent = 'Original-Block (editierbar)';
+
+          const rightLabel = document.createElement('div');
+          rightLabel.className = 'text-label';
+          rightLabel.textContent = 'Korrigierter Block (editierbar)';
+
+          const leftTa = document.createElement('textarea');
+          leftTa.value = block.original;
+
+          const rightTa = document.createElement('textarea');
           rightTa.value = block.corrected;
-          block.status = 'korrigiert';
-          status.textContent = block.status;
-          info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
-        }, 300);
 
-        leftTa.addEventListener('input', recompute);
-        rightTa.addEventListener('input', () => {
-          block.corrected = rightTa.value;
-          block.status = 'manuell';
-          status.textContent = block.status;
-          info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
+          const errorText = document.createElement('div');
+          errorText.className = 'error-text';
+
+          function updateHeaderAndState() {
+            leftMeta.textContent =
+              'Block ' + (index + 1) +
+              ' • Zeichen: ' + block.original.length +
+              ' • Status: ' + block.status;
+            stateBadge.textContent = block.status === 'läuft' ? 'läuft…' : block.status;
+            stateBadge.className = 'state ' + statusClass(block.status);
+            errorText.textContent = block.error || '';
+            rightTa.disabled = block.status === 'läuft';
+          }
+
+          block.refs = { leftTa, rightTa, stateBadge, leftMeta, errorText, updateHeaderAndState };
+          updateHeaderAndState();
+
+          block.debouncedRequest = debounce(function () {
+            enqueueBlock(block.id, true);
+          }, DEBOUNCE_MS);
+
+          leftTa.addEventListener('input', function () {
+            block.original = leftTa.value;
+            block.status = 'wartet';
+            block.error = '';
+            updateHeaderAndState();
+            block.debouncedRequest();
+          });
+
+          rightTa.addEventListener('input', function () {
+            block.corrected = rightTa.value;
+          });
+
+          leftCol.append(leftLabel, leftTa);
+          rightCol.append(rightLabel, rightTa, errorText);
+          grid.append(leftCol, rightCol);
+          header.append(leftMeta, stateBadge);
+          wrap.append(header, grid);
+          frag.append(wrap);
         });
 
-        left.append(leftLabel, leftTa);
-        right.append(rightLabel, rightTa);
-        grid.append(left, right);
-        wrapper.append(header, grid);
-        fragment.append(wrapper);
+        el.blocks.replaceChildren(frag);
+      }
+
+      function updateBlockUI(block) {
+        if (block.refs && typeof block.refs.updateHeaderAndState === 'function') {
+          block.refs.rightTa.value = block.corrected;
+          block.refs.updateHeaderAndState();
+        }
+      }
+
+      function ensureApiKey() {
+        state.apiKey = (el.apiKey.value || '').trim();
+        if (!state.apiKey) {
+          showStatus('Bitte zuerst einen OpenRouter API-Key eingeben.', true);
+          return false;
+        }
+        return true;
+      }
+
+      function enqueueBlock(blockId, prioritize) {
+        if (state.stopRequested) return;
+        if (state.queueSet.has(blockId)) return;
+        if (prioritize) {
+          state.queue.unshift(blockId);
+        } else {
+          state.queue.push(blockId);
+        }
+        state.queueSet.add(blockId);
+        processQueue();
+      }
+
+      function extractApiError(payload) {
+        if (!payload || typeof payload !== 'object') return '';
+        if (payload.error && typeof payload.error === 'object') {
+          return payload.error.message || payload.error.code || '';
+        }
+        if (payload.message) return payload.message;
+        return '';
+      }
+
+      async function correctBlock(block, versionAtSchedule) {
+        const modelId = parseModelId(el.modelInput.value);
+        if (!modelId) {
+          block.status = 'Fehler';
+          block.error = 'Ungültiges Modell. Bitte URL oder Model-ID prüfen.';
+          updateBlockUI(block);
+          return;
+        }
+
+        if (!ensureApiKey()) {
+          block.status = 'Fehler';
+          block.error = 'API-Key fehlt.';
+          updateBlockUI(block);
+          return;
+        }
+
+        block.status = 'läuft';
+        block.error = '';
+        updateBlockUI(block);
+
+        const controller = new AbortController();
+        state.controllers.set(block.id, controller);
+
+        try {
+          const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + state.apiKey,
+              'Content-Type': 'application/json',
+              'HTTP-Referer': window.location.origin,
+              'X-Title': 'OCR Korrektur Tool'
+            },
+            body: JSON.stringify({
+              model: modelId,
+              messages: [
+                {
+                  role: 'system',
+                  content: 'Du bist ein präziser deutscher Lektor. Korrigiere nur Fehler (Leerzeichen mitten im Wort, Ligaturen/Unicode-Artefakte, Rechtschreibung, Grammatik). Erhalte Bedeutung, Absatzstruktur und Stil. Gib NUR den korrigierten Text zurück, keine Erklärungen.'
+                },
+                {
+                  role: 'user',
+                  content: 'Korrigiere den folgenden Text. Gib NUR den korrigierten Text zurück:\n\n' + block.original
+                }
+              ],
+              temperature: 0.1
+            }),
+            signal: controller.signal
+          });
+
+          let data = null;
+          try {
+            data = await response.json();
+          } catch {
+            data = null;
+          }
+
+          if (!response.ok) {
+            const apiMsg = extractApiError(data);
+            throw new Error('HTTP ' + response.status + (apiMsg ? ' – ' + apiMsg : ''));
+          }
+
+          const content = data && data.choices && data.choices[0] && data.choices[0].message
+            ? data.choices[0].message.content
+            : '';
+
+          if (!content) {
+            throw new Error('Leere API-Antwort');
+          }
+
+          if (versionAtSchedule !== state.jobVersion) {
+            return;
+          }
+
+          block.corrected = String(content);
+          block.status = 'fertig';
+          block.error = '';
+          updateBlockUI(block);
+        } catch (err) {
+          if (controller.signal.aborted) {
+            block.status = 'wartet';
+            block.error = 'Abgebrochen';
+          } else {
+            block.status = 'Fehler';
+            block.error = err && err.message ? err.message : 'Unbekannter Fehler';
+          }
+          updateBlockUI(block);
+        } finally {
+          state.controllers.delete(block.id);
+        }
+      }
+
+      function processQueue() {
+        while (!state.stopRequested && state.running < MAX_CONCURRENT && state.queue.length > 0) {
+          const blockId = state.queue.shift();
+          state.queueSet.delete(blockId);
+          const block = state.blocks[blockId];
+          if (!block) continue;
+
+          state.running += 1;
+          const versionAtSchedule = state.jobVersion;
+
+          correctBlock(block, versionAtSchedule)
+            .finally(function () {
+              state.running -= 1;
+              if (!state.stopRequested) {
+                processQueue();
+              }
+              if (state.running === 0 && state.queue.length === 0 && !state.stopRequested) {
+                showStatus('Korrektur abgeschlossen.');
+              }
+            });
+        }
+      }
+
+      function stopAll() {
+        state.stopRequested = true;
+        state.jobVersion += 1;
+        state.queue = [];
+        state.queueSet.clear();
+        state.controllers.forEach(function (controller) {
+          controller.abort();
+        });
+        state.controllers.clear();
+        showStatus('Anfragen gestoppt.');
+      }
+
+      function splitBlocks() {
+        stopAll();
+        state.stopRequested = false;
+        state.running = 0;
+
+        const source = el.sourceInput.value || '';
+        const size = Math.max(1000, Number(el.chunkSize.value) || 10000);
+        const chunks = splitIntoChunks(source, size);
+
+        state.blocks = chunks.map(function (chunk, idx) { return createBlock(idx, chunk); });
+        buildBlocksUI();
+        el.mergedOutput.value = '';
+        showStatus(chunks.length ? chunks.length + ' Blöcke erstellt.' : 'Kein Text zum Aufteilen.');
+      }
+
+      function splitAndCorrectAll() {
+        splitBlocks();
+        if (!state.blocks.length) return;
+        if (!ensureApiKey()) return;
+
+        state.stopRequested = false;
+        state.jobVersion += 1;
+        showStatus('Korrektur gestartet...');
+        for (let i = 0; i < state.blocks.length; i += 1) {
+          enqueueBlock(i, false);
+        }
+      }
+
+      function mergeCorrected() {
+        const merged = state.blocks.map(function (b) { return b.corrected || ''; }).join('');
+        el.mergedOutput.value = merged;
+        showStatus('Korrigierte Blöcke zusammengefügt.');
+      }
+
+      async function copyMerged() {
+        const text = el.mergedOutput.value || '';
+        if (!text) {
+          showStatus('Nichts zu kopieren. Bitte zuerst zusammenfügen.', true);
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          showStatus('In Zwischenablage kopiert.');
+        } catch {
+          showStatus('Kopieren fehlgeschlagen. Bitte manuell kopieren.', true);
+        }
+      }
+
+      function resetAll() {
+        stopAll();
+        state.stopRequested = false;
+        state.running = 0;
+        state.blocks = [];
+        state.apiKey = '';
+
+        el.apiKey.value = '';
+        el.sourceInput.value = '';
+        el.mergedOutput.value = '';
+        el.blocks.replaceChildren();
+        showStatus('Zurückgesetzt.');
+      }
+
+      el.splitBtn.addEventListener('click', splitBlocks);
+      el.splitCorrectBtn.addEventListener('click', splitAndCorrectAll);
+      el.stopBtn.addEventListener('click', stopAll);
+      el.mergeBtn.addEventListener('click', mergeCorrected);
+      el.copyBtn.addEventListener('click', copyMerged);
+      el.resetBtn.addEventListener('click', resetAll);
+
+      el.apiKey.addEventListener('input', function () {
+        state.apiKey = (el.apiKey.value || '').trim();
       });
 
-      blocksEl.replaceChildren(fragment);
-    }
-
-    document.getElementById('splitBtn').addEventListener('click', () => {
-      const size = Math.max(1000, Number(chunkSizeInput.value) || 10000);
-      makeBlocks(splitIntoChunks(sourceInput.value, size), false);
-    });
-
-    document.getElementById('splitCorrectBtn').addEventListener('click', () => {
-      const size = Math.max(1000, Number(chunkSizeInput.value) || 10000);
-      makeBlocks(splitIntoChunks(sourceInput.value, size), true);
-    });
-
-    document.getElementById('mergeBtn').addEventListener('click', () => {
-      mergedOutput.value = state.blocks.map((b) => b.corrected).join('');
-    });
-
-    document.getElementById('copyBtn').addEventListener('click', async () => {
-      if (!mergedOutput.value) return;
-      try {
-        await navigator.clipboard.writeText(mergedOutput.value);
-        alert('Korrigierter Text wurde in die Zwischenablage kopiert.');
-      } catch {
-        alert('Kopieren fehlgeschlagen. Bitte manuell kopieren.');
-      }
-    });
-
-    document.getElementById('resetBtn').addEventListener('click', () => {
-      sourceInput.value = '';
-      mergedOutput.value = '';
-      state.blocks = [];
-      blocksEl.replaceChildren();
-    });
+      showStatus('Bereit.');
+    })();
   </script>
 </body>
 </html>
