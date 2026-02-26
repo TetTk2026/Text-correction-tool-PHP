@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OCR Textkorrektur (lokal)</title>
+  <title>OCR Textkorrektur (Variante A: Frontend)</title>
   <style>
     :root { color-scheme: light dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f3f4f6; color: #111827; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 16px; }
     .panel { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 12px; margin-bottom: 14px; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     .toolbar input[type="number"] { width: 120px; padding: 6px; }
@@ -19,26 +19,28 @@
     .block-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; }
     .field { display: flex; flex-direction: column; gap: 6px; }
     .field label { font-weight: 600; font-size: 13px; }
+    .status { font-size: 12px; font-weight: 600; }
     .muted { color: #4b5563; font-size: 12px; }
     @media (max-width: 900px) { .block-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>OCR/PDF-Textkorrektur (lokal, ohne externe APIs)</h1>
+    <h1>OCR/PDF-Textkorrektur (Variante A: nur Frontend)</h1>
 
     <div class="panel">
       <div class="toolbar">
         <label>Chunk-Größe:
           <input id="chunkSize" type="number" min="1000" step="500" value="10000" />
         </label>
-        <button id="splitBtn">Aufteilen &amp; Korrigieren</button>
+        <button id="splitBtn">Aufteilen</button>
+        <button id="splitCorrectBtn">Aufteilen &amp; Korrigieren</button>
         <button id="mergeBtn">Alles zusammenfügen (korrigiert)</button>
         <button id="copyBtn">In Zwischenablage kopieren</button>
         <button id="resetBtn">Reset</button>
       </div>
-      <p class="muted">Füge deinen langen Text unten ein. Jede Änderung links berechnet rechts nach 300ms neu.</p>
-      <textarea id="sourceInput" placeholder="Hier gesamten Rohtext einfügen..."></textarea>
+      <p class="muted">Lokale Regex/Heuristik-Korrektur im Browser. Links editieren korrigiert rechts nach ~300ms neu.</p>
+      <textarea id="sourceInput" placeholder="Hier gesamten Rohtext einfügen (z. B. bis 200.000 Zeichen)..."></textarea>
     </div>
 
     <div id="blocks"></div>
@@ -58,7 +60,6 @@
     const mergedOutput = document.getElementById('mergedOutput');
 
     function splitIntoChunks(text, size) {
-      // O(n)-Chunking per String.slice.
       const chunks = [];
       for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
       return chunks;
@@ -66,32 +67,22 @@
 
     function normalizeAndCorrect(text) {
       let out = text || '';
-
-      // 1) Unicode NFKC: vereinheitlicht typografische Varianten/Ligaturen.
       out = out.normalize('NFKC');
-
-      // 2) Ligaturen explizit ersetzen (ß bleibt unverändert).
       out = out
         .replace(/ﬀ/g, 'ff')
         .replace(/ﬁ/g, 'fi')
         .replace(/ﬂ/g, 'fl')
         .replace(/ﬃ/g, 'ffi')
         .replace(/ﬄ/g, 'ffl');
-
-      // 3) Zeilenumbrüche normalisieren + Layout-Umbrüche innerhalb Absätzen glätten.
       out = out.replace(/\r\n?/g, '\n');
       out = out.replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n');
-      out = out.replace(/\n{3,}/g, '\n\n'); // max. eine Leerzeile
-      out = out.replace(/([^\n])\n([^\n])/g, '$1 $2'); // Einzelumbruch im Absatz -> Space
-
-      // 4) Spaces mitten im Wort (zwischen Unicode-Buchstaben) entfernen.
+      out = out.replace(/\n{3,}/g, '\n\n');
+      out = out.replace(/([^\n])-\n(\p{L})/gu, '$1$2');
+      out = out.replace(/([^\n])\n([^\n])/g, '$1 $2');
       out = out.replace(/(\p{L})[ \t]+(\p{L})/gu, '$1$2');
-
-      // 5) Allgemeine Whitespace-/Satzzeichenregeln.
       out = out.replace(/[ \t]{2,}/g, ' ');
       out = out.replace(/[ \t]+([,.;:!?])/g, '$1');
       out = out.replace(/([,.;:!?])([^\s\n])/g, '$1 $2');
-
       return out.trim();
     }
 
@@ -103,6 +94,16 @@
       };
     }
 
+    function makeBlocks(chunks, doCorrect) {
+      state.blocks = chunks.map((chunk) => ({
+        original: chunk,
+        corrected: doCorrect ? normalizeAndCorrect(chunk) : chunk,
+        status: doCorrect ? 'korrigiert' : 'wartet'
+      }));
+      renderBlocks();
+      mergedOutput.value = '';
+    }
+
     function renderBlocks() {
       const fragment = document.createDocumentFragment();
 
@@ -112,7 +113,16 @@
 
         const header = document.createElement('div');
         header.className = 'block-header';
-        header.innerHTML = `<strong>Block ${idx + 1}</strong><span>Original: ${block.original.length} | Korrigiert: ${block.corrected.length} Zeichen</span>`;
+
+        const meta = document.createElement('strong');
+        meta.textContent = `Block ${idx + 1}`;
+        const info = document.createElement('span');
+        info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
+        const status = document.createElement('span');
+        status.className = 'status';
+        status.textContent = block.status;
+
+        header.append(meta, info, status);
 
         const grid = document.createElement('div');
         grid.className = 'block-grid';
@@ -120,28 +130,34 @@
         const left = document.createElement('div');
         left.className = 'field';
         const leftLabel = document.createElement('label');
-        leftLabel.textContent = 'Original (editierbar)';
+        leftLabel.textContent = 'Original-Block (editierbar)';
         const leftTa = document.createElement('textarea');
         leftTa.value = block.original;
 
         const right = document.createElement('div');
         right.className = 'field';
         const rightLabel = document.createElement('label');
-        rightLabel.textContent = 'Korrigiert (editierbar)';
+        rightLabel.textContent = 'Korrigierter Block (editierbar)';
         const rightTa = document.createElement('textarea');
         rightTa.value = block.corrected;
 
         const recompute = debounce(() => {
+          block.status = 'läuft…';
+          status.textContent = block.status;
           block.original = leftTa.value;
           block.corrected = normalizeAndCorrect(block.original);
           rightTa.value = block.corrected;
-          header.innerHTML = `<strong>Block ${idx + 1}</strong><span>Original: ${block.original.length} | Korrigiert: ${block.corrected.length} Zeichen</span>`;
+          block.status = 'korrigiert';
+          status.textContent = block.status;
+          info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
         }, 300);
 
         leftTa.addEventListener('input', recompute);
         rightTa.addEventListener('input', () => {
           block.corrected = rightTa.value;
-          header.innerHTML = `<strong>Block ${idx + 1}</strong><span>Original: ${block.original.length} | Korrigiert: ${block.corrected.length} Zeichen</span>`;
+          block.status = 'manuell';
+          status.textContent = block.status;
+          info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
         });
 
         left.append(leftLabel, leftTa);
@@ -156,10 +172,12 @@
 
     document.getElementById('splitBtn').addEventListener('click', () => {
       const size = Math.max(1000, Number(chunkSizeInput.value) || 10000);
-      const chunks = splitIntoChunks(sourceInput.value, size);
-      state.blocks = chunks.map((c) => ({ original: c, corrected: normalizeAndCorrect(c) }));
-      renderBlocks();
-      mergedOutput.value = '';
+      makeBlocks(splitIntoChunks(sourceInput.value, size), false);
+    });
+
+    document.getElementById('splitCorrectBtn').addEventListener('click', () => {
+      const size = Math.max(1000, Number(chunkSizeInput.value) || 10000);
+      makeBlocks(splitIntoChunks(sourceInput.value, size), true);
     });
 
     document.getElementById('mergeBtn').addEventListener('click', () => {
@@ -167,10 +185,9 @@
     });
 
     document.getElementById('copyBtn').addEventListener('click', async () => {
-      const text = mergedOutput.value;
-      if (!text) return;
+      if (!mergedOutput.value) return;
       try {
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(mergedOutput.value);
         alert('Korrigierter Text wurde in die Zwischenablage kopiert.');
       } catch {
         alert('Kopieren fehlgeschlagen. Bitte manuell kopieren.');
