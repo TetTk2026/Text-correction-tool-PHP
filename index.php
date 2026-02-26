@@ -109,6 +109,14 @@ $hasSessionKey = isset($_SESSION['openrouter_api_key']) && $_SESSION['openrouter
         <input type="checkbox" id="smoothLineBreaks" checked style="width:auto;">
         Zeilenumbrüche glätten
       </label>
+      <label class="tight" style="display:flex; gap:8px; align-items:center;">
+        <input type="checkbox" id="preferParagraphSplit" checked style="width:auto;">
+        Am Absatzende trennen (empfohlen)
+      </label>
+      <label class="tight" style="display:flex; gap:8px; align-items:center;">
+        <input type="checkbox" id="splitOnWordBoundary" checked style="width:auto;">
+        Notfalls an Wortgrenze trennen
+      </label>
     </div>
 
     <div class="row" style="margin-top:10px;">
@@ -155,7 +163,9 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     apiReach: document.getElementById('apiReach'),
     keyStored: document.getElementById('keyStored'),
     statusMessage: document.getElementById('statusMessage'),
-    smoothLineBreaks: document.getElementById('smoothLineBreaks')
+    smoothLineBreaks: document.getElementById('smoothLineBreaks'),
+    preferParagraphSplit: document.getElementById('preferParagraphSplit'),
+    splitOnWordBoundary: document.getElementById('splitOnWordBoundary')
   };
 
   const safeError = (msg) => ({ ok: false, error: { message: msg || 'Unbekannter Fehler' }, httpStatus: 0 });
@@ -275,21 +285,108 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     return (v || '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]));
   }
 
+  function splitIntoChunksSmart(text, maxLen = 5000, options = {}) {
+    const {
+      preferParagraphSplit = true,
+      minChunkFraction = 0.6,
+      keepDelimiter = true,
+      splitOnWordBoundary = true
+    } = options;
+
+    const normalizedText = (text || '').replace(/\r\n|\r/g, '\n');
+    const chunks = [];
+    const clampedMaxLen = Math.max(1, Number(maxLen) || 5000);
+    const minFraction = Math.min(0.95, Math.max(0.1, Number(minChunkFraction) || 0.6));
+
+    const isLetter = (char) => /\p{L}/u.test(char || '');
+    const leadingNewlineTrim = /^\n(?!\n)/;
+
+    let rest = normalizedText;
+    while (rest.length > clampedMaxLen) {
+      const searchStart = Math.min(Math.floor(clampedMaxLen * minFraction), rest.length);
+      const searchEnd = Math.min(clampedMaxLen, rest.length);
+      let splitPoint = -1;
+
+      if (preferParagraphSplit) {
+        const paragraphWindow = rest.slice(searchStart, searchEnd);
+        let match;
+        const paragraphRegex = /\n{2,}/g;
+        while ((match = paragraphRegex.exec(paragraphWindow)) !== null) {
+          splitPoint = searchStart + match.index + (keepDelimiter ? match[0].length : 0);
+        }
+      }
+
+      if (splitPoint < 0 && splitOnWordBoundary) {
+        const chunkWindow = rest.slice(searchStart, searchEnd);
+        const whitespaceRegex = /\s+/g;
+        let match;
+        while ((match = whitespaceRegex.exec(chunkWindow)) !== null) {
+          splitPoint = searchStart + match.index + match[0].length;
+        }
+      }
+
+      if (splitPoint < 0) {
+        splitPoint = clampedMaxLen;
+      }
+
+      if (splitPoint <= 0) {
+        splitPoint = Math.min(clampedMaxLen, rest.length);
+      }
+
+      if (splitPoint < rest.length && isLetter(rest[splitPoint - 1]) && isLetter(rest[splitPoint])) {
+        let safePoint = splitPoint - 1;
+        while (safePoint > 0 && !/\s/u.test(rest[safePoint])) {
+          safePoint--;
+        }
+        if (safePoint > 0) {
+          while (safePoint < rest.length && /\s/u.test(rest[safePoint])) {
+            safePoint++;
+          }
+          splitPoint = safePoint;
+        }
+      }
+
+      const chunk = rest.slice(0, splitPoint);
+      let nextRest = rest.slice(splitPoint);
+      nextRest = nextRest.replace(leadingNewlineTrim, '');
+
+      if (!chunk.length || chunk.length === rest.length) {
+        chunks.push(chunk || rest.slice(0, clampedMaxLen));
+        rest = chunk.length ? nextRest : rest.slice(clampedMaxLen);
+        continue;
+      }
+
+      chunks.push(chunk);
+      rest = nextRest;
+    }
+
+    if (rest.length) {
+      chunks.push(rest);
+    }
+
+    return chunks;
+  }
+
   function splitText() {
     const text = el.fullText.value || '';
-    const size = Math.max(500, Number(el.chunkSize.value) || 10000);
-    const blocks = [];
-    for (let i = 0, id = 1; i < text.length; i += size, id++) {
-      blocks.push({
-        id,
-        originalText: text.slice(i, i + size),
-        correctedText: '',
-        status: 'wartet',
-        errorMessage: '',
-        httpStatus: null,
-        startTime: null
-      });
-    }
+    const size = Math.max(500, Number(el.chunkSize.value) || 5000);
+    const textChunks = splitIntoChunksSmart(text, size, {
+      preferParagraphSplit: el.preferParagraphSplit.checked,
+      splitOnWordBoundary: el.splitOnWordBoundary.checked,
+      minChunkFraction: 0.6,
+      keepDelimiter: true
+    });
+
+    const blocks = textChunks.map((chunk, i) => ({
+      id: i + 1,
+      originalText: chunk,
+      correctedText: '',
+      status: 'wartet',
+      errorMessage: '',
+      httpStatus: null,
+      startTime: null
+    }));
+
     state.blocks = blocks;
     state.queue = [];
     state.running.clear();
@@ -452,6 +549,26 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   // Testfall:
   // Input: "Zu ihren Spezialgebieten zählen die Themen Bindungsangst, Stärkung des\n\nSelbstwertgefühls ..."
   // Output: Zeilen innerhalb eines Absatzes werden zusammengeführt, die Leerzeile als Absatztrenner bleibt erhalten.
+
+  // Chunking-Testfälle:
+  // 1) "Links auf Webseiten Dritter ..." darf nie mitten im Wort getrennt werden.
+  // 2) Bei vorhandenem "\n\n" soll in der Nähe des Limits bevorzugt am Absatzende getrennt werden.
+  // 3) Ohne Absatztrenner wird an der letzten Wortgrenze vor dem Limit getrennt.
+  // 4) Extremfall ohne Whitespace (z.B. 12000x "A") nutzt den Hard-Cut-Fallback.
+  function runChunkingSelfTests() {
+    const t1 = splitIntoChunksSmart('Links auf Webseiten Dritter sind wichtig', 6);
+    console.assert(!/^inks/u.test(t1[1] || ''), 'Chunking Test 1 fehlgeschlagen');
+
+    const t2 = splitIntoChunksSmart('Absatz A\n\nAbsatz B\n\nAbsatz C', 12, { preferParagraphSplit: true });
+    console.assert(/\n\n$/.test(t2[0] || ''), 'Chunking Test 2 fehlgeschlagen');
+
+    const t3 = splitIntoChunksSmart('Dies ist eine sehr lange Zeile ohne Absatztrenner', 20, { preferParagraphSplit: true });
+    console.assert(/\s$/.test(t3[0] || '') || (t3[1] || '').startsWith(' '), 'Chunking Test 3 fehlgeschlagen');
+
+    const t4 = splitIntoChunksSmart('A'.repeat(12000), 5000, { splitOnWordBoundary: true });
+    console.assert(t4.length === 3 && t4[0].length === 5000 && t4[1].length === 5000, 'Chunking Test 4 fehlgeschlagen');
+  }
+  runChunkingSelfTests();
 
 
   async function pingApi() {
