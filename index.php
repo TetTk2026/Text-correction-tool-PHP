@@ -86,8 +86,27 @@ function parse_openrouter_model(string $rawModel): string
     return $default;
 }
 
+function map_http_error_message(int $statusCode, string $apiMessage = ''): string
+{
+    if ($statusCode === 401 || $statusCode === 403) {
+        return 'API-Key ungültig oder nicht autorisiert.';
+    }
+    if ($statusCode === 429) {
+        return 'Rate Limit erreicht. Bitte später erneut versuchen.';
+    }
+    if ($statusCode >= 500) {
+        return 'OpenRouter-Serverfehler. Bitte erneut versuchen.';
+    }
+    if ($apiMessage !== '') {
+        return $apiMessage;
+    }
+
+    return 'HTTP ' . $statusCode;
+}
+
 function openrouter_correct_chunk(string $chunkText, string $modelId, string $apiKey): array
 {
+    $started = microtime(true);
     $payload = [
         'model' => $modelId,
         'messages' => [
@@ -124,25 +143,84 @@ function openrouter_correct_chunk(string $chunkText, string $modelId, string $ap
 
     $result = curl_exec($ch);
     $curlErr = curl_error($ch);
+    $curlErrNo = curl_errno($ch);
     $statusCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
+    $elapsedMs = (int)round((microtime(true) - $started) * 1000);
+
     if ($result === false) {
-        return ['ok' => false, 'error' => 'OpenRouter-Verbindungsfehler: ' . $curlErr];
+        $message = $curlErrNo === CURLE_OPERATION_TIMEDOUT
+            ? 'Timeout beim Warten auf OpenRouter-Antwort.'
+            : 'OpenRouter-Verbindungsfehler: ' . $curlErr;
+
+        return [
+            'ok' => false,
+            'httpStatus' => $statusCode > 0 ? $statusCode : null,
+            'error' => [
+                'message' => $message,
+                'type' => $curlErrNo === CURLE_OPERATION_TIMEDOUT ? 'timeout' : 'curl_error',
+                'raw' => $curlErr,
+            ],
+            'meta' => [
+                'model' => $modelId,
+                'inputChars' => mb_strlen($chunkText),
+                'outputChars' => 0,
+                'elapsedMs' => $elapsedMs,
+            ],
+        ];
     }
 
     $decoded = json_decode($result, true);
     if ($statusCode >= 400) {
-        $message = $decoded['error']['message'] ?? ('HTTP ' . $statusCode);
-        return ['ok' => false, 'error' => 'OpenRouter-Fehler: ' . $message, 'statusCode' => $statusCode];
+        $apiMessage = (string)($decoded['error']['message'] ?? '');
+        return [
+            'ok' => false,
+            'httpStatus' => $statusCode,
+            'error' => [
+                'message' => map_http_error_message($statusCode, $apiMessage),
+                'type' => 'http_error',
+                'raw' => $apiMessage,
+            ],
+            'meta' => [
+                'model' => $modelId,
+                'inputChars' => mb_strlen($chunkText),
+                'outputChars' => 0,
+                'elapsedMs' => $elapsedMs,
+            ],
+        ];
     }
 
     $corrected = trim((string)($decoded['choices'][0]['message']['content'] ?? ''));
     if ($corrected === '') {
-        return ['ok' => false, 'error' => 'Leere Antwort vom Modell.'];
+        return [
+            'ok' => false,
+            'httpStatus' => $statusCode,
+            'error' => [
+                'message' => 'Leere Antwort vom Modell.',
+                'type' => 'empty_response',
+                'raw' => is_string($result) ? mb_substr($result, 0, 500) : '',
+            ],
+            'meta' => [
+                'model' => $modelId,
+                'inputChars' => mb_strlen($chunkText),
+                'outputChars' => 0,
+                'elapsedMs' => $elapsedMs,
+            ],
+        ];
     }
 
-    return ['ok' => true, 'corrected' => $corrected];
+    return [
+        'ok' => true,
+        'correctedText' => $corrected,
+        'httpStatus' => $statusCode,
+        'meta' => [
+            'model' => $modelId,
+            'inputChars' => mb_strlen($chunkText),
+            'outputChars' => mb_strlen($corrected),
+            'elapsedMs' => $elapsedMs,
+        ],
+    ];
 }
 
 $serverConfigKey = trim((string)getenv('OPENROUTER_API_KEY'));
@@ -190,25 +268,28 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
             $modelId = parse_openrouter_model($modelInput);
             $aiResult = openrouter_correct_chunk($chunkText, $modelId, $apiKey);
-            if (!$aiResult['ok']) {
-                json_response([
-                    'ok' => false,
-                    'error' => (string)$aiResult['error'],
-                    'model' => $modelId,
-                ], 429);
+            if (!(bool)($aiResult['ok'] ?? false)) {
+                $httpStatus = (int)($aiResult['httpStatus'] ?? 502);
+                if ($httpStatus < 400) {
+                    $httpStatus = 502;
+                }
+                json_response($aiResult, $httpStatus);
             }
 
-            json_response([
-                'ok' => true,
-                'corrected' => (string)$aiResult['corrected'],
-                'model' => $modelId,
-            ]);
+            json_response($aiResult);
         }
 
+        $localCorrected = ocr_correct_text_local($chunkText);
         json_response([
             'ok' => true,
-            'corrected' => ocr_correct_text_local($chunkText),
-            'model' => 'lokal',
+            'correctedText' => $localCorrected,
+            'httpStatus' => 200,
+            'meta' => [
+                'model' => 'lokal',
+                'inputChars' => mb_strlen($chunkText),
+                'outputChars' => mb_strlen($localCorrected),
+                'elapsedMs' => 0,
+            ],
         ]);
     }
 
@@ -240,6 +321,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     .field { display: flex; flex-direction: column; gap: 6px; }
     .field label { font-weight: 600; font-size: 13px; }
     .status { font-size: 12px; font-weight: 700; }
+    .status-badge { padding: 2px 8px; border-radius: 999px; border: 1px solid #cbd5e1; background: #f3f4f6; }
+    .status-running { background: #dbeafe; border-color: #93c5fd; color: #1e40af; }
+    .status-done { background: #dcfce7; border-color: #86efac; color: #166534; }
+    .status-error { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+    .status-aborted { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+    .block-progress { height: 4px; background: #e5e7eb; }
+    .block-progress > span { display: block; height: 100%; width: 0; background: #2563eb; transition: width .25s ease; }
+    .block-progress.indeterminate > span { width: 40%; animation: indeterminate 1.2s infinite linear; }
+    .block-progress.done > span { width: 100%; background: #16a34a; }
+    .block-progress.error > span { width: 100%; background: #dc2626; }
+    .block-progress.aborted > span { width: 100%; background: #d97706; }
+    .block-subinfo { padding: 6px 10px; border-bottom: 1px solid #e5e7eb; font-size: 12px; color: #4b5563; }
+    .block-actions { display: flex; gap: 6px; }
+    .retry-btn { padding: 4px 8px; font-size: 12px; }
+    @keyframes indeterminate { 0% { transform: translateX(-120%);} 100% { transform: translateX(320%);} }
     .msg { font-size: 12px; margin-top: 8px; }
     .msg.error { color: #b91c1c; }
     .msg.ok { color: #166534; }
@@ -282,6 +378,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
       <div class="toolbar" style="margin-top: 10px;">
         <button id="splitBtn">Aufteilen</button>
         <button id="splitCorrectBtn">Aufteilen &amp; Korrigieren</button>
+        <button id="stopAllBtn">Stop All</button>
         <button id="mergeBtn">Alles zusammenfügen (korrigiert)</button>
         <button id="copyBtn">In Zwischenablage kopieren</button>
         <button id="resetBtn">Reset</button>
@@ -292,6 +389,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
       <p class="muted">Server-Config-Modus aktiv (OPENROUTER_API_KEY gesetzt): UI-Key-Feld ist deaktiviert.</p>
       <?php endif; ?>
       <div id="globalMsg" class="msg"></div>
+      <div id="globalProgress" class="muted">0 / 0 Blöcke fertig • Fehler: 0 • Läuft: 0</div>
       <textarea id="sourceInput" placeholder="Hier gesamten Rohtext einfügen (z. B. bis 200.000 Zeichen)..."></textarea>
     </div>
 
@@ -307,11 +405,26 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     const csrfToken = <?= json_encode($_SESSION['csrf_token']) ?>;
     const serverConfigMode = <?= $serverConfigMode ? 'true' : 'false' ?>;
 
+    const STATUS = {
+      WAITING: 'wartet',
+      QUEUED: 'in Warteschlange',
+      SENDING: 'sendet…',
+      RESPONDING: 'antwortet…',
+      DONE: 'fertig',
+      ABORTED: 'abgebrochen',
+      ERROR: 'Fehler',
+      MANUAL: 'manuell'
+    };
+
     const state = {
       blocks: [],
       queue: [],
+      queueSet: new Set(),
       activeRequests: 0,
       maxConcurrency: 2,
+      controllers: new Map(),
+      durationTimer: null,
+      stopRequested: false,
     };
 
     const els = {
@@ -321,6 +434,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
       modelInput: document.getElementById('modelInput'),
       apiKeyInput: document.getElementById('apiKeyInput'),
       globalMsg: document.getElementById('globalMsg'),
+      globalProgress: document.getElementById('globalProgress'),
       blocksEl: document.getElementById('blocks'),
       mergedOutput: document.getElementById('mergedOutput'),
     };
@@ -344,56 +458,140 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
       };
     }
 
-    async function postJson(payload) {
+    function nowMs() { return Date.now(); }
+    function formatTime(ms) { return (ms / 1000).toFixed(1) + ' s'; }
+    function formatStart(ts) { return ts ? new Date(ts).toLocaleTimeString('de-DE') : '—'; }
+
+    function mapStatusClass(status) {
+      if ([STATUS.SENDING, STATUS.RESPONDING, STATUS.QUEUED].includes(status)) return 'status-running';
+      if (status === STATUS.DONE) return 'status-done';
+      if (status === STATUS.ERROR) return 'status-error';
+      if (status === STATUS.ABORTED) return 'status-aborted';
+      return '';
+    }
+
+    function mapFriendlyError(httpStatus, message) {
+      if (httpStatus === 429) return 'Rate Limit erreicht.';
+      if (httpStatus === 401 || httpStatus === 403) return 'API-Key ungültig.';
+      if (httpStatus >= 500) return 'Serverfehler bei OpenRouter.';
+      if ((message || '').toLowerCase().includes('timeout')) return 'Timeout.';
+      return message || '';
+    }
+
+    function startDurationTimer() {
+      if (state.durationTimer) return;
+      state.durationTimer = setInterval(() => {
+        state.blocks.forEach((b, i) => {
+          if (!b.refs) return;
+          if ([STATUS.SENDING, STATUS.RESPONDING, STATUS.QUEUED].includes(b.status) && b.startedAt) {
+            b.liveElapsedMs = nowMs() - b.startedAt;
+            updateBlockView(i);
+          }
+        });
+      }, 250);
+    }
+
+    function stopDurationTimerIfIdle() {
+      const active = state.blocks.some((b) => [STATUS.SENDING, STATUS.RESPONDING, STATUS.QUEUED].includes(b.status));
+      if (!active && state.durationTimer) {
+        clearInterval(state.durationTimer);
+        state.durationTimer = null;
+      }
+    }
+
+    async function postJson(payload, signal) {
       const resp = await fetch(window.location.href, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal,
       });
-      const data = await resp.json().catch(() => ({ ok: false, error: 'Ungültige Serverantwort.' }));
+      const data = await resp.json().catch(() => ({ ok: false, error: { message: 'Ungültige Serverantwort.' } }));
       if (!resp.ok || !data.ok) {
-        throw new Error(data.error || `HTTP ${resp.status}`);
+        const err = new Error((data.error && data.error.message) || data.error || `HTTP ${resp.status}`);
+        err.httpStatus = data.httpStatus || resp.status;
+        err.errorObj = data.error || { message: err.message };
+        err.meta = data.meta || null;
+        throw err;
       }
       return data;
     }
 
-    function enqueueCorrection(blockIndex) {
-      if (!state.queue.includes(blockIndex)) {
+    function updateGlobalProgress() {
+      const total = state.blocks.length;
+      const done = state.blocks.filter((b) => b.status === STATUS.DONE).length;
+      const errors = state.blocks.filter((b) => b.status === STATUS.ERROR).length;
+      const running = state.blocks.filter((b) => [STATUS.SENDING, STATUS.RESPONDING].includes(b.status)).length;
+      els.globalProgress.textContent = `${done} / ${total} Blöcke fertig • Fehler: ${errors} • Läuft: ${running}`;
+    }
+
+    function enqueueCorrection(blockIndex, prioritize = false) {
+      if (state.stopRequested) return;
+      const block = state.blocks[blockIndex];
+      if (!block) return;
+      if (state.queueSet.has(blockIndex)) return;
+      block.status = STATUS.QUEUED;
+      if (prioritize) {
+        state.queue.unshift(blockIndex);
+      } else {
         state.queue.push(blockIndex);
       }
+      state.queueSet.add(blockIndex);
+      updateBlockView(blockIndex);
+      updateGlobalProgress();
+      startDurationTimer();
       processQueue();
     }
 
     function processQueue() {
-      while (state.activeRequests < state.maxConcurrency && state.queue.length > 0) {
+      while (!state.stopRequested && state.activeRequests < state.maxConcurrency && state.queue.length > 0) {
         const blockIndex = state.queue.shift();
+        state.queueSet.delete(blockIndex);
         const block = state.blocks[blockIndex];
         if (!block) continue;
 
         state.activeRequests += 1;
-        block.status = 'läuft…';
+        block.status = STATUS.SENDING;
+        block.startedAt = nowMs();
+        block.liveElapsedMs = 0;
         block.error = '';
         updateBlockView(blockIndex);
+        updateGlobalProgress();
 
         correctBlock(blockIndex)
           .then(() => {
-            block.status = 'korrigiert';
+            block.status = STATUS.DONE;
             block.error = '';
           })
           .catch((err) => {
-            block.status = 'Fehler';
-            block.error = err.message || 'Unbekannter Fehler';
+            if (err.name === 'AbortError') {
+              block.status = STATUS.ABORTED;
+              block.error = 'Request abgebrochen.';
+            } else {
+              block.status = STATUS.ERROR;
+              block.error = mapFriendlyError(err.httpStatus, err.message);
+            }
           })
           .finally(() => {
             state.activeRequests -= 1;
+            block.finishedAt = nowMs();
+            if (!block.meta.elapsedMs) {
+              block.meta.elapsedMs = (block.finishedAt - (block.startedAt || block.finishedAt));
+            }
+            state.controllers.delete(blockIndex);
             updateBlockView(blockIndex);
+            updateGlobalProgress();
             processQueue();
+            stopDurationTimerIfIdle();
           });
       }
     }
 
     async function correctBlock(blockIndex) {
       const block = state.blocks[blockIndex];
+      const controller = new AbortController();
+      state.controllers.set(blockIndex, controller);
+
       const payload = {
         action: 'correct',
         csrfToken,
@@ -401,17 +599,45 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         mode: els.modeSelect.value,
         model: els.modelInput.value,
       };
-      const data = await postJson(payload);
-      block.corrected = data.corrected || block.corrected;
+
+      const respondingTimer = setTimeout(() => {
+        if (block.status === STATUS.SENDING) {
+          block.status = STATUS.RESPONDING;
+          updateBlockView(blockIndex);
+          updateGlobalProgress();
+        }
+      }, 150);
+
+      try {
+        const data = await postJson(payload, controller.signal);
+        clearTimeout(respondingTimer);
+        block.status = STATUS.RESPONDING;
+        block.corrected = data.correctedText || block.corrected;
+        block.httpStatus = data.httpStatus || 200;
+        block.meta = data.meta || block.meta;
+        block.outputChars = block.corrected.length;
+      } catch (err) {
+        clearTimeout(respondingTimer);
+        block.httpStatus = err.httpStatus || null;
+        block.meta = err.meta || block.meta;
+        throw err;
+      }
     }
 
     function makeBlocks(chunks, scheduleCorrection) {
+      stopAll(false);
+      state.stopRequested = false;
       state.blocks = chunks.map((chunk) => ({
         original: chunk,
         corrected: scheduleCorrection ? '' : chunk,
-        status: scheduleCorrection ? 'wartet' : 'manuell',
+        status: scheduleCorrection ? STATUS.WAITING : STATUS.MANUAL,
         error: '',
         refs: null,
+        startedAt: null,
+        finishedAt: null,
+        liveElapsedMs: 0,
+        httpStatus: null,
+        meta: { model: els.modeSelect.value === 'openrouter' ? els.modelInput.value : 'lokal', inputChars: chunk.length, outputChars: scheduleCorrection ? 0 : chunk.length, elapsedMs: 0 },
       }));
       renderBlocks();
 
@@ -419,15 +645,23 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         state.blocks.forEach((_, idx) => enqueueCorrection(idx));
       }
       els.mergedOutput.value = '';
+      updateGlobalProgress();
     }
 
     function updateBlockView(idx) {
       const block = state.blocks[idx];
       if (!block || !block.refs) return;
+      const running = [STATUS.SENDING, STATUS.RESPONDING, STATUS.QUEUED].includes(block.status);
+      const elapsedMs = block.meta.elapsedMs || block.liveElapsedMs || 0;
+
       block.refs.rightTa.value = block.corrected;
       block.refs.status.textContent = block.status;
-      block.refs.info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
+      block.refs.status.className = `status status-badge ${mapStatusClass(block.status)}`;
+      block.refs.info.textContent = `Start: ${formatStart(block.startedAt)} • Dauer: ${elapsedMs ? formatTime(elapsedMs) : '—'}`;
+      block.refs.subinfo.textContent = `HTTP: ${block.httpStatus ?? '—'} • In: ${block.original.length} • Out: ${block.corrected.length} • ${block.error || 'OK'}`;
       block.refs.error.textContent = block.error || '';
+      block.refs.progress.className = 'block-progress' + (running ? ' indeterminate' : block.status === STATUS.DONE ? ' done' : block.status === STATUS.ERROR ? ' error' : block.status === STATUS.ABORTED ? ' aborted' : '');
+      block.refs.retryBtn.disabled = running;
     }
 
     function renderBlocks() {
@@ -444,13 +678,27 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         meta.textContent = `Block ${idx + 1}`;
 
         const info = document.createElement('span');
-        info.textContent = `Original: ${block.original.length} | Korrigiert: ${block.corrected.length}`;
-
         const status = document.createElement('span');
-        status.className = 'status';
-        status.textContent = block.status;
 
-        header.append(meta, info, status);
+        const actions = document.createElement('div');
+        actions.className = 'block-actions';
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'retry-btn';
+        retryBtn.textContent = 'Neu versuchen';
+        retryBtn.addEventListener('click', () => {
+          block.error = '';
+          enqueueCorrection(idx, true);
+        });
+        actions.append(retryBtn);
+
+        header.append(meta, info, status, actions);
+
+        const subinfo = document.createElement('div');
+        subinfo.className = 'block-subinfo';
+        const progress = document.createElement('div');
+        progress.className = 'block-progress';
+        const progressInner = document.createElement('span');
+        progress.append(progressInner);
 
         const grid = document.createElement('div');
         grid.className = 'block-grid';
@@ -475,30 +723,54 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 
         const leftChange = debounce(() => {
           block.original = leftTa.value;
-          block.status = 'wartet';
+          block.status = STATUS.WAITING;
           block.error = '';
+          block.httpStatus = null;
+          block.meta = { ...block.meta, inputChars: block.original.length, outputChars: block.corrected.length, elapsedMs: 0 };
           updateBlockView(idx);
-          enqueueCorrection(idx);
+          enqueueCorrection(idx, true);
         }, 300);
 
         leftTa.addEventListener('input', leftChange);
         rightTa.addEventListener('input', () => {
           block.corrected = rightTa.value;
-          block.status = 'manuell';
+          block.status = STATUS.MANUAL;
           block.error = '';
+          block.meta = { ...block.meta, outputChars: block.corrected.length };
           updateBlockView(idx);
+          updateGlobalProgress();
         });
 
         left.append(leftLabel, leftTa);
         right.append(rightLabel, rightTa);
         grid.append(left, right);
-        wrapper.append(header, grid, error);
+        wrapper.append(header, subinfo, progress, grid, error);
         fragment.append(wrapper);
 
-        block.refs = { rightTa, info, status, error };
+        block.refs = { rightTa, info, status, subinfo, error, progress, retryBtn };
+        updateBlockView(idx);
       });
 
       els.blocksEl.replaceChildren(fragment);
+    }
+
+    function stopAll(showMsg = true) {
+      state.stopRequested = true;
+      state.queue = [];
+      state.queueSet.clear();
+      state.controllers.forEach((controller, idx) => {
+        controller.abort();
+        const block = state.blocks[idx];
+        if (block && [STATUS.SENDING, STATUS.RESPONDING, STATUS.QUEUED].includes(block.status)) {
+          block.status = STATUS.ABORTED;
+          block.error = 'Request abgebrochen (Stop All).';
+          updateBlockView(idx);
+        }
+      });
+      state.controllers.clear();
+      stopDurationTimerIfIdle();
+      updateGlobalProgress();
+      if (showMsg) showMessage('Alle laufenden Requests wurden abgebrochen.', 'ok');
     }
 
     document.getElementById('saveApiKeyBtn').addEventListener('click', async () => {
@@ -535,12 +807,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     });
 
     document.getElementById('splitCorrectBtn').addEventListener('click', () => {
+      state.stopRequested = false;
       if (els.modeSelect.value === 'openrouter' && !serverConfigMode) {
         showMessage('Hinweis: Für OpenRouter zuerst API-Key sicher speichern.', 'ok');
       }
       const size = Math.max(1000, Number(els.chunkSizeInput.value) || 10000);
       makeBlocks(splitIntoChunks(els.sourceInput.value, size), true);
     });
+
+    document.getElementById('stopAllBtn').addEventListener('click', () => stopAll(true));
 
     document.getElementById('mergeBtn').addEventListener('click', () => {
       els.mergedOutput.value = state.blocks.map((b) => b.corrected).join('');
@@ -557,13 +832,19 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     });
 
     document.getElementById('resetBtn').addEventListener('click', () => {
+      stopAll(false);
       els.sourceInput.value = '';
       els.mergedOutput.value = '';
       state.blocks = [];
       state.queue = [];
+      state.queueSet.clear();
+      state.stopRequested = false;
       els.blocksEl.replaceChildren();
+      updateGlobalProgress();
       showMessage('Zurückgesetzt.', 'ok');
     });
+
+    updateGlobalProgress();
   </script>
 </body>
 </html>
