@@ -35,22 +35,18 @@ function requireCsrf(array $body): void {
 function modelIdFromInput(string $input): string {
     $trim = trim($input);
     if ($trim === '') {
-        return 'arcee-ai/trinity-large-preview:free';
+        return 'stepfun/step-3.5-flash:free';
     }
     $parsed = parse_url($trim);
     if (!is_array($parsed) || !isset($parsed['host'])) {
         return $trim;
     }
-    $host = strtolower((string)$parsed['host']);
+    $host = strtolower((string) $parsed['host']);
     if (strpos($host, 'openrouter.ai') === false) {
         return $trim;
     }
-    $path = trim((string)($parsed['path'] ?? ''), '/');
-    if ($path === '') {
-        return $trim;
-    }
-    $parts = explode('/', $path);
-    if ($parts[0] === 'api') {
+    $path = trim((string) ($parsed['path'] ?? ''), '/');
+    if ($path === '' || strpos($path, 'api/') === 0) {
         return $trim;
     }
     return $path;
@@ -62,9 +58,59 @@ function deriveReferer(): string {
     return ($https ? 'https://' : 'http://') . $host;
 }
 
+function preCleanupText(string $text): string {
+    $t = str_replace(["\r\n", "\r"], "\n", $text);
+
+    if (class_exists('Normalizer')) {
+        $normalized = Normalizer::normalize($t, Normalizer::FORM_KC);
+        if (is_string($normalized)) {
+            $t = $normalized;
+        }
+    }
+
+    $t = str_replace(['ﬀ', 'ﬁ', 'ﬂ', 'ﬃ', 'ﬄ'], ['ff', 'fi', 'fl', 'ffi', 'ffl'], $t);
+
+    // Spezialregel: öffentliche/Öffentlichkeit OCR-Muster "ö? ent" -> "öffent".
+    $t = preg_replace('/([Öö])\?\s*ent/u', '$1ffent', $t) ?? $t;
+    // Spezialregel: Haftung OCR-Muster "Ha? ung" -> "Haftung".
+    $t = preg_replace('/Ha\?\s*ung/u', 'Haftung', $t) ?? $t;
+    // Spezialregel: Themen OCR-Muster "The? en" und "? emen" -> "Themen".
+    $t = preg_replace('/The\?\s*en/u', 'Themen', $t) ?? $t;
+    $t = preg_replace('/\?\s*emen/u', 'Themen', $t) ?? $t;
+    // Spezialregel: finden OCR-Muster mit Steuerzeichen/Leerzeichen vor "nden" -> "finden".
+    $t = preg_replace('/(?:\x16|\s)nden\b/u', ' finden', $t) ?? $t;
+
+    // URL/Domain-Spaces: "www. " und Spaces um Domain-Punkte reparieren.
+    $t = preg_replace('/\bwww\.\s+/iu', 'www.', $t) ?? $t;
+    $t = preg_replace('/([\p{L}\d-])\s*\.\s*(de|com|net|org|info|eu)\b/iu', '$1.$2', $t) ?? $t;
+
+    // Anführungszeichen-Spaces: Space nach » und vor « entfernen.
+    $t = preg_replace('/»\s+/u', '»', $t) ?? $t;
+    $t = preg_replace('/\s+«/u', '«', $t) ?? $t;
+
+    // Zwischen Buchstaben stehendes ? als OCR-Platzhalter zu "f".
+    $t = preg_replace('/(?<=\p{L})\?(?=\p{L})/u', 'f', $t) ?? $t;
+    // Spaces mitten im Wort reduzieren: "Selbstwer t" -> "Selbstwert".
+    $t = preg_replace('/(\p{L})\s+(\p{L})/u', '$1$2', $t) ?? $t;
+
+    $t = preg_replace('/\s+([,.;:!?])/u', '$1', $t) ?? $t;
+    $t = preg_replace('/[ \t]{2,}/u', ' ', $t) ?? $t;
+
+    return trim($t);
+}
+
+function applyPostCleanup(string $text): string {
+    $t = $text;
+    $t = preg_replace('/\bwww\.\s+/iu', 'www.', $t) ?? $t;
+    $t = preg_replace('/([\p{L}\d-])\s*\.\s*(de|com|net|org|info|eu)\b/iu', '$1.$2', $t) ?? $t;
+    $t = preg_replace('/»\s+/u', '»', $t) ?? $t;
+    $t = preg_replace('/\s+«/u', '«', $t) ?? $t;
+    return $t;
+}
+
 function normalizeAndFluidifyText(string $text): string {
     $text = str_replace(["\r\n", "\r"], "\n", $text);
-    $text = preg_replace("/\n{3,}/", "\n\n", $text) ?? $text;
+    $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
     $text = preg_replace('/-\n(?=\p{L})/u', '', $text) ?? $text;
 
     $paragraphs = preg_split('/\n{2}/', $text) ?: [];
@@ -93,17 +139,15 @@ function normalizeAndFluidifyText(string $text): string {
                 $current = $line;
                 continue;
             }
-
             $current = rtrim($current) . ' ' . ltrim($line);
         }
-        $builtLines[] = $current;
 
+        $builtLines[] = $current;
         $resultParagraphs[] = implode("\n", array_map('cleanupWhitespace', $builtLines));
     }
 
     $normalized = implode("\n\n", $resultParagraphs);
-    $normalized = preg_replace("/\n{3,}/", "\n\n", $normalized) ?? $normalized;
-
+    $normalized = preg_replace('/\n{3,}/', "\n\n", $normalized) ?? $normalized;
     return trim($normalized);
 }
 
@@ -164,11 +208,7 @@ if (!is_string($action) || $action === '') {
 }
 
 if ($action === 'ping') {
-    jsonResponse([
-        'ok' => true,
-        'time' => gmdate('c'),
-        'session' => session_status() === PHP_SESSION_ACTIVE
-    ]);
+    jsonResponse(['ok' => true, 'time' => gmdate('c'), 'session' => session_status() === PHP_SESSION_ACTIVE]);
 }
 
 if ($action === 'saveKey') {
@@ -219,17 +259,20 @@ if ($apiKey === '') {
     jsonResponse(['ok' => false, 'error' => ['message' => 'Kein OpenRouter API-Key verfügbar'], 'httpStatus' => 401], 401);
 }
 
+$chunkText = preCleanupText($chunkText);
 $modelId = modelIdFromInput($modelInput);
+$startMs = (int) round(microtime(true) * 1000);
+
 $payload = [
     'model' => $modelId,
     'messages' => [
         [
             'role' => 'system',
-            'content' => "Du bist ein präziser deutscher Lektor. Korrigiere OCR/PDF-Extraktionsfehler (falsche Leerzeichen in Wörtern, Ligaturen/Unicode-Artefakte), Rechtschreibung und Grammatik.\nWICHTIG: Entferne harte Zeilenumbrüche, die nur durch Layout entstanden sind, und forme flüssige Absätze.\nErhalte die Absatzstruktur: echte Absätze bleiben durch eine Leerzeile getrennt.\nErhalte Überschriften (z.B. komplett großgeschriebene Zeilen wie 'STEFANIE STAHL' oder sehr kurze Titel wie 'EINS') als eigene Zeilen.\nGib NUR den korrigierten Text zurück."
+            'content' => "Du bist ein präziser deutscher Lektor für OCR-Texte. Repariere OCR-Artefakte, inklusive '?' als Platzhalter in Wörtern, fehlerhafte Umlaute/ß, falsche Leerzeichen in URLs, kaputte Anführungszeichen-Abstände und getrennte Wortteile.\nLasse keine Fragezeichen mitten in Wörtern stehen.\nArbeite streng nicht-kreativ: keine inhaltlichen Ergänzungen, keine Umformulierungen über notwendige Korrekturen hinaus.\nEntferne harte Layout-Zeilenumbrüche innerhalb von Absätzen, erhalte echte Absatztrennungen und erhalte Überschriften als eigene Zeilen."
         ],
         [
             'role' => 'user',
-            'content' => "Korrigiere den folgenden Text.\nEntferne Zeilenumbrüche innerhalb von Absätzen (Zeilen sollen zu vollständigen Sätzen/Absätzen zusammenlaufen), aber behalte echte Absatztrennungen (Leerzeilen) und Überschriftenzeilen.\nGib NUR den korrigierten Text zurück:\n\n" . $chunkText
+            'content' => "Gib NUR den korrigierten Text zurück.\n\n" . $chunkText
         ],
     ],
     'temperature' => 0.1,
@@ -260,16 +303,26 @@ $error = curl_error($ch);
 $httpStatus = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
+$elapsedMs = (int) round(microtime(true) * 1000) - $startMs;
+
 if ($errno !== 0) {
-    if ($errno === CURLE_OPERATION_TIMEDOUT) {
-        jsonResponse(['ok' => false, 'error' => ['message' => 'Timeout'], 'httpStatus' => 0], 200);
-    }
-    jsonResponse(['ok' => false, 'error' => ['message' => 'Netzwerkfehler: ' . $error], 'httpStatus' => 0], 200);
+    $message = $errno === CURLE_OPERATION_TIMEDOUT ? 'Timeout' : ('Netzwerkfehler: ' . $error);
+    jsonResponse([
+        'ok' => false,
+        'error' => ['message' => $message],
+        'httpStatus' => 0,
+        'meta' => ['blockId' => (int) $blockId, 'model' => $modelId, 'elapsedMs' => $elapsedMs]
+    ], 200);
 }
 
-$decoded = json_decode((string)$response, true);
+$decoded = json_decode((string) $response, true);
 if (!is_array($decoded)) {
-    jsonResponse(['ok' => false, 'error' => ['message' => 'Ungültige Antwort von OpenRouter'], 'httpStatus' => $httpStatus], 200);
+    jsonResponse([
+        'ok' => false,
+        'error' => ['message' => 'Ungültige Antwort von OpenRouter'],
+        'httpStatus' => $httpStatus,
+        'meta' => ['blockId' => (int) $blockId, 'model' => $modelId, 'elapsedMs' => $elapsedMs]
+    ], 200);
 }
 
 if ($httpStatus !== 200) {
@@ -278,7 +331,7 @@ if ($httpStatus !== 200) {
         'ok' => false,
         'error' => ['message' => (string) $msg],
         'httpStatus' => $httpStatus,
-        'meta' => ['blockId' => (int) $blockId, 'model' => $modelId]
+        'meta' => ['blockId' => (int) $blockId, 'model' => $modelId, 'elapsedMs' => $elapsedMs]
     ], 200);
 }
 
@@ -286,9 +339,17 @@ $correctedText = '';
 if (isset($decoded['choices'][0]['message']['content']) && is_string($decoded['choices'][0]['message']['content'])) {
     $correctedText = trim($decoded['choices'][0]['message']['content']);
 }
+
 $correctedText = normalizeAndFluidifyText($correctedText);
+$correctedText = applyPostCleanup($correctedText);
+
 if ($correctedText === '') {
-    jsonResponse(['ok' => false, 'error' => ['message' => 'Leere Modellantwort'], 'httpStatus' => 200], 200);
+    jsonResponse([
+        'ok' => false,
+        'error' => ['message' => 'Leere Modellantwort'],
+        'httpStatus' => 200,
+        'meta' => ['blockId' => (int) $blockId, 'model' => $modelId, 'elapsedMs' => $elapsedMs]
+    ], 200);
 }
 
 jsonResponse([
@@ -300,5 +361,6 @@ jsonResponse([
         'model' => $modelId,
         'inputChars' => mb_strlen($chunkText),
         'outputChars' => mb_strlen($correctedText),
+        'elapsedMs' => $elapsedMs,
     ]
 ]);
