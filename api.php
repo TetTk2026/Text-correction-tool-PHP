@@ -278,14 +278,14 @@ $payload = [
     'messages' => [
         [
             'role' => 'system',
-            'content' => "Du bist ein präziser deutscher Lektor für OCR-Texte. Repariere OCR-Artefakte, inklusive '?' als Platzhalter in Wörtern, fehlerhafte Umlaute/ß, falsche Leerzeichen in URLs, kaputte Anführungszeichen-Abstände und getrennte Wortteile.\nLasse keine Fragezeichen mitten in Wörtern stehen.\nArbeite streng nicht-kreativ: keine inhaltlichen Ergänzungen, keine Umformulierungen über notwendige Korrekturen hinaus.\nBehalte bestehende Zeilenumbrüche und Absatzgrenzen bei; kein automatisches Zusammenführen von Zeilen zu Fließtext."
+            'content' => "WICHTIG – INHALT DARF NICHT VERÄNDERT WERDEN:\n\nDas Modell darf den Text inhaltlich NICHT umformulieren, NICHT kürzen, NICHT erweitern und NICHT stilistisch verbessern.\n\nErlaubt ist ausschließlich:\n- Korrektur von Rechtschreibfehlern\n- Korrektur von Grammatikfehlern\n- Korrektur von OCR-/PDF-Artefakten (z. B. falsche Leerzeichen in Wörtern, Ligaturen, defekte Sonderzeichen wie „?“ in Wörtern)\n- Korrektur von Zeichensetzungsfehlern\n- Entfernen von Layout-Zeilenumbrüchen innerhalb eines Absatzes\n\nNicht erlaubt ist:\n- Stilistische Verbesserung\n- Umformulierung von Sätzen\n- Zusammenfassung\n- Hinzufügen oder Entfernen von Informationen\n- Änderung der Satzstruktur, wenn sie grammatikalisch korrekt ist\n- Vereinfachung oder Modernisierung der Sprache\n\nDer korrigierte Text muss inhaltlich exakt identisch bleiben.\nWenn ein Satz grammatikalisch korrekt ist, darf er nicht umgeschrieben werden.\n\nBehalte die Satzstruktur exakt bei. Wenn ein Satz korrekt ist, muss er wortwörtlich unverändert bleiben. Gib den Text so nah wie möglich am Original zurück – nur Fehlerkorrekturen."
         ],
         [
             'role' => 'user',
             'content' => "Gib NUR den korrigierten Text zurück.\n\n" . $chunkText
         ],
     ],
-    'temperature' => 0.1,
+    'temperature' => 0.0,
 ];
 
 $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
