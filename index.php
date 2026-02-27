@@ -117,6 +117,10 @@ $hasSessionKey = isset($_SESSION['openrouter_api_key']) && $_SESSION['openrouter
         <input type="checkbox" id="splitOnWordBoundary" checked style="width:auto;">
         Notfalls an Wortgrenze trennen
       </label>
+      <label class="tight" style="display:flex; gap:8px; align-items:center;">
+        <input type="checkbox" id="enableScrollSync" checked style="width:auto;">
+        Scroll-Sync (links/rechts)
+      </label>
     </div>
 
     <div class="row" style="margin-top:10px;">
@@ -165,7 +169,8 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     statusMessage: document.getElementById('statusMessage'),
     smoothLineBreaks: document.getElementById('smoothLineBreaks'),
     preferParagraphSplit: document.getElementById('preferParagraphSplit'),
-    splitOnWordBoundary: document.getElementById('splitOnWordBoundary')
+    splitOnWordBoundary: document.getElementById('splitOnWordBoundary'),
+    enableScrollSync: document.getElementById('enableScrollSync')
   };
 
   const safeError = (msg) => ({ ok: false, error: { message: msg || 'Unbekannter Fehler' }, httpStatus: 0 });
@@ -242,7 +247,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
           ${['sendet…','antwortet…'].includes(b.status) ? '<div class="progress"><div></div></div>' : ''}
           <button data-retry="${b.id}" class="alt tight">Retry</button>
         </div>
-        <div class="grid-2">
+        <div class="grid-2" data-block-id="${b.id}">
           <div>
             <label>Original</label>
             <textarea data-original="${b.id}">${escapeHtml(b.originalText)}</textarea>
@@ -278,7 +283,79 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
       btn.addEventListener('click', () => enqueueRetry(Number(btn.dataset.retry)));
     });
 
+    document.querySelectorAll('[data-block-id]').forEach((row) => {
+      setupBlockScrollSync(row);
+    });
+
     updateGlobalStats();
+  }
+
+  function syncScroll(source, target) {
+    const sourceMax = source.scrollHeight - source.clientHeight;
+    const targetMax = target.scrollHeight - target.clientHeight;
+    const ratio = (sourceMax <= 0) ? 0 : (source.scrollTop / sourceMax);
+
+    if (targetMax <= 0) {
+      target.scrollTop = 0;
+      return;
+    }
+
+    target.scrollTop = ratio * targetMax;
+  }
+
+  function setupBlockScrollSync(blockRow) {
+    const leftTA = blockRow.querySelector('[data-original]');
+    const rightTA = blockRow.querySelector('[data-corrected]');
+    if (!leftTA || !rightTA) {
+      return;
+    }
+
+    let isSyncing = false;
+    let leftPending = false;
+    let rightPending = false;
+
+    const onLeftScroll = () => {
+      if (!el.enableScrollSync.checked || isSyncing || leftPending) {
+        return;
+      }
+
+      leftPending = true;
+      requestAnimationFrame(() => {
+        leftPending = false;
+        if (!el.enableScrollSync.checked || isSyncing) {
+          return;
+        }
+
+        isSyncing = true;
+        syncScroll(leftTA, rightTA);
+        setTimeout(() => {
+          isSyncing = false;
+        }, 0);
+      });
+    };
+
+    const onRightScroll = () => {
+      if (!el.enableScrollSync.checked || isSyncing || rightPending) {
+        return;
+      }
+
+      rightPending = true;
+      requestAnimationFrame(() => {
+        rightPending = false;
+        if (!el.enableScrollSync.checked || isSyncing) {
+          return;
+        }
+
+        isSyncing = true;
+        syncScroll(rightTA, leftTA);
+        setTimeout(() => {
+          isSyncing = false;
+        }, 0);
+      });
+    };
+
+    leftTA.addEventListener('scroll', onLeftScroll);
+    rightTA.addEventListener('scroll', onRightScroll);
   }
 
   function escapeHtml(v) {
@@ -595,6 +672,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     mergeCorrected();
     el.exportText.value = normalizeAndFluidifyText(el.exportText.value);
   });
+
   document.getElementById('btnCopy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(el.exportText.value); el.statusMessage.textContent = 'In Zwischenablage kopiert.'; }
     catch { el.statusMessage.textContent = 'Kopieren fehlgeschlagen.'; }
