@@ -455,6 +455,9 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   function postCleanup(text) {
     let t = cleanupUrlsAndQuotes(text || '');
     t = t.replace(/\s+([,.;:!?])/gu, '$1');
+    t = t.replace(/(?<=\p{L})\?+(?=\p{L})/gu, '');
+    t = t.replace(/([.!?])(?![\s\n]|$)/gu, '$1 ');
+    t = t.replace(/ {2,}/gu, ' ');
     return t;
   }
 
