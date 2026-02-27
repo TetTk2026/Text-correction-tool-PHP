@@ -19,136 +19,181 @@ $hasSessionKey = isset($_SESSION['openrouter_api_key']) && $_SESSION['openrouter
   <title>OCR Korrektur Tool (PHP + OpenRouter)</title>
   <style>
     :root { color-scheme: light; }
-    body { font-family: Arial, sans-serif; margin: 0; background: #f4f5f7; color: #1f2937; }
-    .container { max-width: 1300px; margin: 0 auto; padding: 16px; }
-    .card { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
-    h1,h2,h3 { margin-top: 0; }
-    textarea,input,button,select { font: inherit; }
-    textarea,input[type="text"],input[type="number"],input[type="password"],select {
-      width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px;
+    body { font-family: Arial, sans-serif; margin: 0; background: #f3f4f6; color: #111827; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 12px 16px 24px; }
+    .section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+    h1, h2, h3 { margin: 0; }
+    h2 { margin-bottom: 10px; font-size: 20px; }
+    textarea, input, button, select { font: inherit; }
+    textarea, input[type="text"], input[type="number"], input[type="password"], select {
+      width: 100%; box-sizing: border-box; padding: 9px; border: 1px solid #d1d5db; border-radius: 8px;
     }
-    textarea { min-height: 110px; resize: vertical; }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .row > * { flex: 1; }
-    .tight { flex: 0 0 auto; }
-    button { background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 9px 12px; cursor: pointer; }
-    button:hover { background: #1d4ed8; }
-    button.alt { background: #4b5563; }
-    button.warn { background: #dc2626; }
+    textarea { min-height: 140px; resize: vertical; }
+    .muted { color: #6b7280; font-size: 13px; }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 30; margin-bottom: 12px;
+      background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(3px);
+      border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px;
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+    }
+    .topbar-right { text-align: right; min-width: 280px; }
+    .counter-line { font-weight: 600; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .running-indicator { color: #2563eb; font-size: 13px; display: none; }
+    .running-indicator.active { display: inline-block; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: #2563eb; margin-right: 4px; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+    .global-progress { height: 6px; background: #e5e7eb; border-radius: 999px; margin-top: 6px; overflow: hidden; }
+    .global-progress > div { height: 100%; width: 0; background: #2563eb; transition: width .2s ease; }
+
+    .form-grid { display: grid; grid-template-columns: 170px 1fr auto auto auto; gap: 8px; align-items: end; margin-top: 10px; }
+    .field label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 14px; }
+
+    button { border: none; border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+    button.primary { background: #2563eb; color: #fff; font-weight: 700; }
+    button.primary:hover { background: #1d4ed8; }
+    button.secondary { background: #e5e7eb; color: #111827; }
+    button.secondary:hover { background: #d1d5db; }
+    button.danger { background: #b91c1c; color: #fff; }
+    button.danger:hover { background: #991b1b; }
     button:disabled { opacity: .6; cursor: not-allowed; }
-    .status-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:8px; }
-    .status-chip { background:#f8fafc; border:1px solid #cbd5e1; border-radius:8px; padding:8px; }
-    .muted { color:#6b7280; font-size: 13px; }
-    .blocks { display: grid; gap: 12px; }
-    .block { border:1px solid #cbd5e1; border-radius:10px; padding: 10px; background:#fff; }
-    .block-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
-    .badge { padding:2px 8px; border-radius:999px; font-size:12px; background:#e5e7eb; }
-    .badge.ok { background:#dcfce7; }
-    .badge.err { background:#fee2e2; }
-    .badge.run { background:#dbeafe; }
-    .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
-    .progress { width:170px; height: 8px; border-radius: 999px; background:#e5e7eb; overflow:hidden; }
-    .progress > div { width:45%; height:100%; background:#3b82f6; animation: move 1s linear infinite; }
-    @keyframes move { from{ transform: translateX(-110%);} to{ transform:translateX(240%);} }
-    .err-text { color:#b91c1c; font-size: 13px; white-space: pre-wrap; }
-    .toolbar { align-items: flex-start; }
-    .global-counter { position: sticky; top: 8px; align-self: flex-start; margin-left: auto; white-space: nowrap; }
-    @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    .blocks { display: grid; gap: 10px; margin-top: 8px; }
+    .block { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; background: #fff; }
+    .block-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .badge { padding: 2px 9px; border-radius: 999px; font-size: 12px; background: #e5e7eb; }
+    .badge.ok { background: #dcfce7; }
+    .badge.err { background: #fee2e2; }
+    .badge.run { background: #dbeafe; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .block textarea { min-height: 110px; }
+
+    details { border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; }
+    details > summary { cursor: pointer; padding: 12px; font-weight: 700; }
+    details[open] > summary { border-bottom: 1px solid #e5e7eb; }
+    details .details-body { padding: 12px; }
+
+    .inline-checks { display: flex; flex-wrap: wrap; gap: 10px 14px; }
+    .inline-checks label { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+    .inline-checks input[type="checkbox"] { width: auto; }
+
+    .link-btn { background: none; color: #b91c1c; padding: 0; border: 0; text-decoration: underline; }
+    .link-btn:disabled { color: #9ca3af; text-decoration: none; opacity: 1; }
+
+    .mini-details { margin-top: 8px; border: 1px dashed #e5e7eb; border-radius: 8px; padding: 7px; font-size: 13px; }
+
+    @media (max-width: 960px) {
+      .form-grid { grid-template-columns: 1fr; }
+      .topbar { flex-direction: column; }
+      .topbar-right { text-align: left; }
+      .counter-line { justify-content: flex-start; }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
 <div class="container">
-  <h1>OCR Korrektur Tool (Variante C)</h1>
-
-  <div class="card">
-    <h3>Systemstatus</h3>
-    <div class="status-grid">
-      <div class="status-chip">API erreichbar: <strong id="apiReach">unbekannt</strong></div>
-      <div class="status-chip">Key-Quelle: <strong id="keySource"><?= $hasEnvKey ? 'ENV' : 'Session/User Input' ?></strong></div>
-      <div class="status-chip">Key gespeichert: <strong id="keyStored"><?= ($hasEnvKey || $hasSessionKey) ? 'ja' : 'nein' ?></strong></div>
-      <div class="status-chip">Session aktiv: <strong id="sessionState"><?= session_status() === PHP_SESSION_ACTIVE ? 'ja' : 'nein' ?></strong></div>
+  <header class="topbar">
+    <h1>OCR Korrektur Tool (Variante C)</h1>
+    <div class="topbar-right">
+      <div class="counter-line">
+        <span>Global: <span id="globalStats">0/0 fertig, Fehler: 0, läuft: 0</span></span>
+        <button id="errorCountBtn" class="link-btn" disabled>Fehler: 0</button>
+        <span id="runningIndicator" class="running-indicator"><span class="dot"></span>läuft…</span>
+      </div>
+      <div class="global-progress" aria-hidden="true"><div id="globalProgressFill"></div></div>
     </div>
-    <p class="muted" id="statusMessage">Bereit.</p>
-  </div>
+  </header>
 
-  <div class="card">
-    <label for="fullText"><strong>Gesamter Text</strong></label>
+  <section class="section">
+    <h2>1) Text</h2>
+    <label for="fullText"><strong>Gesamter Text (Input)</strong></label>
     <textarea id="fullText" placeholder="Text hier einfügen..."></textarea>
 
-    <div class="row" style="margin-top:10px;">
-      <div>
-        <label for="chunkSize"><strong>Chunk size</strong></label>
+    <div class="form-grid">
+      <div class="field">
+        <label for="chunkSize">Chunk size</label>
         <input id="chunkSize" type="number" min="300" step="100" value="2000">
       </div>
-      <div>
-        <label for="modelSelect"><strong>Modell wählen</strong></label>
+      <div class="field">
+        <label for="modelSelect">Modell wählen</label>
         <select id="modelSelect">
-          <option value="https://openrouter.ai/stepfun/step-3.5-flash:free" selected>stepfun/step-3.5-flash:free</option>
-          <option value="https://openrouter.ai/arcee-ai/trinity-large-preview:free">arcee-ai/trinity-large-preview:free</option>
-          <option value="__custom__">Custom</option>
+          <option value="https://openrouter.ai/arcee-ai/trinity-large-preview:free" selected>arcee-ai/trinity-large-preview:free</option>
+          <option value="https://openrouter.ai/stepfun/step-3.5-flash:free">stepfun/step-3.5-flash:free</option>
         </select>
       </div>
-      <div>
-        <label for="modelInput"><strong>Model input (URL oder Model-ID)</strong></label>
-        <input id="modelInput" type="text" value="https://openrouter.ai/stepfun/step-3.5-flash:free">
-      </div>
+      <button id="btnSplitCorrect" class="primary">Aufteilen &amp; Korrigieren</button>
+      <button id="btnSplit" class="secondary">Aufteilen</button>
+      <button id="btnReset" class="secondary">Reset</button>
     </div>
 
-    <div class="row" style="margin-top:10px;">
-      <div>
-        <label for="apiKey"><strong>OpenRouter API Key</strong></label>
+    <div style="margin-top: 10px;">
+      <button id="btnStop" class="danger">Stop All</button>
+    </div>
+  </section>
+
+  <section class="section" id="resultsSection">
+    <h2>2) Ergebnisse</h2>
+    <p id="emptyHint" class="muted">Noch keine Blöcke – bitte aufteilen.</p>
+    <div id="blocks" class="blocks" hidden></div>
+  </section>
+
+  <details open>
+    <summary>3) Export</summary>
+    <div class="details-body">
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+        <button id="btnMerge" class="secondary">Alles zusammenfügen (korrigiert)</button>
+        <button id="btnFluid" class="secondary">Flüssigen Text exportieren</button>
+        <button id="btnCopy" class="secondary">Copy</button>
+      </div>
+      <textarea id="exportText" style="min-height:180px;"></textarea>
+    </div>
+  </details>
+
+  <details style="margin-top: 12px;">
+    <summary>Erweiterte Einstellungen</summary>
+    <div class="details-body">
+      <div class="field" style="margin-bottom:10px;">
+        <label for="modelInput">Model input (URL oder Model-ID)</label>
+        <input id="modelInput" type="text" value="https://openrouter.ai/arcee-ai/trinity-large-preview:free">
+        <div class="muted">Manuelles Model überschreibt Dropdown.</div>
+      </div>
+
+      <div class="inline-checks">
+        <label><input type="checkbox" id="enablePreCleanup">Pre-Cleanup anwenden</label>
+        <label><input type="checkbox" id="preferParagraphSplit" checked>Am Absatzende trennen</label>
+        <label><input type="checkbox" id="splitOnWordBoundary" checked>Notfalls an Wortgrenze trennen</label>
+        <label><input type="checkbox" id="enableScrollSync" checked>Scroll-Sync</label>
+      </div>
+    </div>
+  </details>
+
+  <details style="margin-top: 12px;" id="apiSystemDetails">
+    <summary>API &amp; System</summary>
+    <div class="details-body">
+      <div class="muted" style="margin-bottom:8px;">
+        API erreichbar: <strong id="apiReach">unbekannt</strong> ·
+        Key-Quelle: <strong id="keySource"><?= $hasEnvKey ? 'ENV' : 'Session/User Input' ?></strong> ·
+        Key gespeichert: <strong id="keyStored"><?= ($hasEnvKey || $hasSessionKey) ? 'ja' : 'nein' ?></strong> ·
+        Session aktiv: <strong id="sessionState"><?= session_status() === PHP_SESSION_ACTIVE ? 'ja' : 'nein' ?></strong>
+      </div>
+
+      <div class="field" style="margin-bottom:8px;">
+        <label for="apiKey">OpenRouter API Key</label>
         <input id="apiKey" type="password" placeholder="sk-or-v1-..." <?= $hasEnvKey ? 'disabled' : '' ?>>
       </div>
-      <button class="tight" id="btnSaveKey" <?= $hasEnvKey ? 'disabled' : '' ?>>Key speichern</button>
-      <button class="tight alt" id="btnDeleteKey" <?= $hasEnvKey ? 'disabled' : '' ?>>Key löschen</button>
-      <button class="tight alt" id="btnPing">Test API</button>
-    </div>
-    <?php if ($hasEnvKey): ?>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+        <button id="btnSaveKey" class="secondary" <?= $hasEnvKey ? 'disabled' : '' ?>>Key speichern</button>
+        <button id="btnDeleteKey" class="secondary" <?= $hasEnvKey ? 'disabled' : '' ?>>Key löschen</button>
+        <button id="btnPing" class="secondary">Test API</button>
+      </div>
+      <?php if ($hasEnvKey): ?>
       <p class="muted">Key kommt aus ENV (OPENROUTER_API_KEY). Manuelle Eingabe ist deaktiviert.</p>
-    <?php endif; ?>
-
-    <div class="row toolbar" style="margin-top:10px;">
-      <button id="btnSplit" class="tight">Aufteilen</button>
-      <button id="btnSplitCorrect" class="tight">Aufteilen &amp; Korrigieren</button>
-      <button id="btnStop" class="warn tight">Stop All</button>
-      <button id="btnReset" class="alt tight">Reset</button>
-      <div class="status-chip global-counter">Global: <strong id="globalStats">0/0 fertig, Fehler: 0, läuft: 0</strong></div>
+      <?php endif; ?>
+      <p class="muted" id="statusMessage">Bereit.</p>
     </div>
-
-    <div class="row" style="margin-top:10px;">
-      <label class="tight" style="display:flex; gap:8px; align-items:center;">
-        <input type="checkbox" id="enablePreCleanup" checked style="width:auto;">
-        Pre-Cleanup vor Korrektur anwenden
-      </label>
-      <label class="tight" style="display:flex; gap:8px; align-items:center;">
-        <input type="checkbox" id="preferParagraphSplit" checked style="width:auto;">
-        Am Absatzende trennen (empfohlen)
-      </label>
-      <label class="tight" style="display:flex; gap:8px; align-items:center;">
-        <input type="checkbox" id="splitOnWordBoundary" checked style="width:auto;">
-        Notfalls an Wortgrenze trennen
-      </label>
-      <label class="tight" style="display:flex; gap:8px; align-items:center;">
-        <input type="checkbox" id="enableScrollSync" checked style="width:auto;">
-        Scroll-Sync (links/rechts)
-      </label>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>Blöcke</h3>
-    <div id="blocks" class="blocks"></div>
-  </div>
-
-  <div class="card">
-    <h3>Export</h3>
-    <div class="row">
-      <button id="btnMerge">Alles zusammenfügen (korrigiert)</button>
-      <button id="btnFluid">Flüssigen Text exportieren</button>
-      <button id="btnCopy" class="alt">Copy to clipboard</button>
-    </div>
-    <textarea id="exportText" style="margin-top:10px; min-height:180px;"></textarea>
-  </div>
+  </details>
 </div>
 
 <script>
@@ -156,10 +201,11 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
 
 (() => {
   const MODEL_STORAGE_KEY = 'variantC_model_input';
-  const DEFAULT_MODEL = 'https://openrouter.ai/stepfun/step-3.5-flash:free';
+  const MODEL_SELECT_STORAGE_KEY = 'variantC_model_select';
+  const DEFAULT_MODEL = 'https://openrouter.ai/arcee-ai/trinity-large-preview:free';
   const KNOWN_MODELS = [
-    'https://openrouter.ai/stepfun/step-3.5-flash:free',
-    'https://openrouter.ai/arcee-ai/trinity-large-preview:free'
+    'https://openrouter.ai/arcee-ai/trinity-large-preview:free',
+    'https://openrouter.ai/stepfun/step-3.5-flash:free'
   ];
 
   const state = {
@@ -177,8 +223,12 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     modelInput: document.getElementById('modelInput'),
     apiKey: document.getElementById('apiKey'),
     blocks: document.getElementById('blocks'),
+    emptyHint: document.getElementById('emptyHint'),
     exportText: document.getElementById('exportText'),
     globalStats: document.getElementById('globalStats'),
+    globalProgressFill: document.getElementById('globalProgressFill'),
+    errorCountBtn: document.getElementById('errorCountBtn'),
+    runningIndicator: document.getElementById('runningIndicator'),
     apiReach: document.getElementById('apiReach'),
     keyStored: document.getElementById('keyStored'),
     statusMessage: document.getElementById('statusMessage'),
@@ -229,7 +279,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   function statusClass(s) {
     if (s === 'fertig') return 'ok';
     if (s === 'Fehler' || s === 'abgebrochen') return 'err';
-    if (['sendet…','antwortet…','in Warteschlange'].includes(s)) return 'run';
+    if (['sendet…', 'antwortet…', 'in Warteschlange'].includes(s)) return 'run';
     return '';
   }
 
@@ -237,27 +287,50 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     const total = state.blocks.length;
     const done = state.blocks.filter((b) => b.status === 'fertig').length;
     const errors = state.blocks.filter((b) => b.status === 'Fehler').length;
-    const running = state.blocks.filter((b) => ['sendet…', 'antwortet…', 'in Warteschlange'].includes(b.status)).length;
+    const running = state.blocks.filter((b) => ['sendet…', 'antwortet…'].includes(b.status)).length;
+
     el.globalStats.textContent = `${done}/${total} fertig, Fehler: ${errors}, läuft: ${running}`;
+    el.errorCountBtn.textContent = `Fehler: ${errors}`;
+    el.errorCountBtn.disabled = errors === 0;
+    el.runningIndicator.classList.toggle('active', running > 0);
+
+    const ratio = total === 0 ? 0 : (done / total) * 100;
+    el.globalProgressFill.style.width = `${Math.max(0, Math.min(100, ratio))}%`;
   }
 
   function renderBlocks() {
+    const hasBlocks = state.blocks.length > 0;
+    el.blocks.hidden = !hasBlocks;
+    el.emptyHint.hidden = hasBlocks;
+
     el.blocks.innerHTML = '';
     state.blocks.forEach((b, i) => {
       const card = document.createElement('div');
       card.className = 'block';
-      const elapsed = typeof b.elapsedMs === 'number' ? `${(b.elapsedMs / 1000).toFixed(2)}s` : '-';
+      card.dataset.status = b.status;
+      card.id = `block-${b.id}`;
+
+      const showTime = ['sendet…', 'antwortet…', 'fertig'].includes(b.status);
+      const elapsed = typeof b.elapsedMs === 'number' ? `${(b.elapsedMs / 1000).toFixed(2)}s` : 'läuft…';
+
       card.innerHTML = `
         <div class="block-head">
           <strong>Block ${i + 1}</strong>
-          <span>inputChars: ${b.meta.inputChars ?? b.originalText.length}</span>
-          <span>outputChars: ${b.meta.outputChars ?? b.correctedText.length}</span>
-          <span>Model: ${escapeHtml(b.meta.model || '-')}</span>
+          <span>|</span>
           <span class="badge ${statusClass(b.status)}">${b.status}</span>
-          <span>HTTP: ${b.httpStatus ?? '-'}</span>
-          <span>Zeit: ${elapsed}</span>
-          ${['sendet…','antwortet…'].includes(b.status) ? '<div class="progress"><div></div></div>' : ''}
-          <button data-retry="${b.id}" class="alt tight">Retry</button>
+          ${showTime ? `<span>| Zeit: ${escapeHtml(elapsed)}</span>` : ''}
+          ${b.status === 'Fehler' ? `<button data-retry="${b.id}" class="secondary">Retry</button>` : ''}
+          <details>
+            <summary>Details</summary>
+            <div class="mini-details">
+              Model: ${escapeHtml(b.meta.model || getEffectiveModel() || '-')}<br>
+              HTTP-Code: ${b.httpStatus ?? '-'}<br>
+              inputChars: ${b.meta.inputChars ?? b.originalText.length}<br>
+              outputChars: ${b.meta.outputChars ?? b.correctedText.length}<br>
+              elapsedMs: ${typeof b.elapsedMs === 'number' ? b.elapsedMs : '-'}<br>
+              error.message: ${escapeHtml(b.errorMessage || '-')}
+            </div>
+          </details>
         </div>
         <div class="grid-2" data-block-id="${b.id}">
           <div>
@@ -269,7 +342,6 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
             <textarea data-corrected="${b.id}">${escapeHtml(b.correctedText)}</textarea>
           </div>
         </div>
-        <div class="err-text">${escapeHtml(b.errorMessage || '')}</div>
       `;
       el.blocks.appendChild(card);
     });
@@ -344,13 +416,11 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
 
   function cleanupUrlsAndQuotes(text) {
     let t = text;
-    // URL/Domain-Spaces: nur in domain-ähnlichen Tokens normalisieren.
     t = t.replace(/\b(?:www\.\s*)?[a-z0-9-]+(?:\s*\.\s*[a-z]{2,})+\b/giu, (domainToken) => (
       domainToken
         .replace(/^www\.\s*/iu, 'www.')
         .replace(/\s*\.\s*/gu, '.')
     ));
-    // Anführungszeichen-Spaces: Space direkt nach » und direkt vor « entfernen.
     t = t.replace(/»\s+/gu, '»').replace(/\s+«/gu, '«');
     return t;
   }
@@ -377,15 +447,8 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
 
     t = collapseSpacedLetterChains(t);
     t = cleanupUrlsAndQuotes(t);
-
     t = t.replace(/\t/gu, ' ');
     t = collapseSpacesPerLine(t);
-
-    // Sicherheits-Checks:
-    // 1) "Stefanie Stahl ist Diplom-Psychologin ..." bleibt unverändert.
-    // 2) "S e l b s t w e r t g e f ü h l" -> "Selbstwertgefühl".
-    // 3) "Stärkung des Selbstwertgefühls" bleibt mit Leerzeichen.
-    // 4) "www. stefaniestahl. de" -> "www.stefaniestahl.de".
     return t;
   }
 
@@ -436,7 +499,6 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
 
       if (splitPoint < 0) splitPoint = clampedMaxLen;
 
-      // Safety-Check: niemals mitten im Wort schneiden.
       if (splitPoint < rest.length && isLetter(rest[splitPoint - 1]) && isLetter(rest[splitPoint])) {
         let safe = splitPoint - 1;
         while (safe > 0 && !/\s/u.test(rest[safe])) safe--;
@@ -490,7 +552,6 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
       b.httpStatus = null;
       b.elapsedMs = null;
     });
-    updateGlobalStats();
     renderBlocks();
     drainQueue();
   }
@@ -505,6 +566,12 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     state.queue.push({ blockId, type: 'correct' });
     renderBlocks();
     drainQueue();
+  }
+
+  function getEffectiveModel() {
+    const manual = el.modelInput.value.trim();
+    if (manual !== '') return manual;
+    return el.modelSelect.value || DEFAULT_MODEL;
   }
 
   async function runTask(task) {
@@ -522,7 +589,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
       blockId: block.id,
       chunkText: block.originalText,
       preCleanupEnabled: el.enablePreCleanup.checked,
-      modelInput: el.modelInput.value,
+      modelInput: getEffectiveModel(),
       __signal: controller.signal
     });
 
@@ -642,19 +709,18 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   }, 300);
 
   el.modelSelect.addEventListener('change', () => {
-    if (el.modelSelect.value === '__custom__') return;
-    el.modelInput.value = el.modelSelect.value;
-    saveModelInputDebounced();
+    localStorage.setItem(MODEL_SELECT_STORAGE_KEY, el.modelSelect.value);
   });
 
   el.modelInput.addEventListener('input', () => {
-    const current = el.modelInput.value.trim();
-    if (KNOWN_MODELS.includes(current)) {
-      el.modelSelect.value = current;
-    } else {
-      el.modelSelect.value = '__custom__';
-    }
     saveModelInputDebounced();
+  });
+
+  el.errorCountBtn.addEventListener('click', () => {
+    const firstError = state.blocks.find((b) => b.status === 'Fehler');
+    if (!firstError) return;
+    const node = document.getElementById(`block-${firstError.id}`);
+    if (node) node.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
   document.getElementById('btnSplit').addEventListener('click', splitText);
@@ -698,15 +764,12 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   });
 
   const storedModel = localStorage.getItem(MODEL_STORAGE_KEY);
-  if (storedModel && storedModel.trim() !== '') {
-    el.modelInput.value = storedModel.trim();
-    if (KNOWN_MODELS.includes(storedModel.trim())) {
-      el.modelSelect.value = storedModel.trim();
-    } else {
-      el.modelSelect.value = '__custom__';
-    }
+  const storedSelection = localStorage.getItem(MODEL_SELECT_STORAGE_KEY);
+  el.modelInput.value = storedModel && storedModel.trim() !== '' ? storedModel.trim() : DEFAULT_MODEL;
+
+  if (storedSelection && KNOWN_MODELS.includes(storedSelection)) {
+    el.modelSelect.value = storedSelection;
   } else {
-    el.modelInput.value = DEFAULT_MODEL;
     el.modelSelect.value = DEFAULT_MODEL;
   }
 
