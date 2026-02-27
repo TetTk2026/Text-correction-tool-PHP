@@ -114,6 +114,48 @@ function postCleanup(string $text): string {
     return $t;
 }
 
+function sanitizeModelOutput(string $text): string {
+    $normalized = str_replace(["\r\n", "\r"], "\n", $text);
+    $lines = preg_split('/\n/', $normalized) ?: [];
+
+    $blockedFragments = [
+        'Gib NUR den korrigierten Text zurück',
+        'Gib nur den korrigierten Text zurück',
+        'Here is the corrected text',
+        'Korrigierter Text:',
+        '<<<TEXT>>>',
+        '<<<END>>>',
+    ];
+
+    $filtered = [];
+    foreach ($lines as $line) {
+        $shouldDrop = false;
+        foreach ($blockedFragments as $fragment) {
+            if (mb_stripos($line, $fragment) !== false) {
+                $shouldDrop = true;
+                break;
+            }
+        }
+        if ($shouldDrop) {
+            continue;
+        }
+        $filtered[] = $line;
+    }
+
+    if ($filtered !== []) {
+        $firstLine = ltrim($filtered[0]);
+        if (preg_match('/^(?:System:|User:|Assistant:|WICHTIG:|Instruktion(?:en)?:|Gib\b)/iu', $firstLine) === 1) {
+            array_shift($filtered);
+        }
+    }
+
+    $cleaned = implode("\n", $filtered);
+    $cleaned = str_ireplace('Gib NUR den korrigierten Text zurück', '', $cleaned);
+    $cleaned = str_ireplace('Gib nur den korrigierten Text zurück', '', $cleaned);
+
+    return trim($cleaned);
+}
+
 function normalizeAndFluidifyText(string $text): string {
     $text = str_replace(["\r\n", "\r"], "\n", $text);
     $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
@@ -281,14 +323,15 @@ $payload = [
     'messages' => [
         [
             'role' => 'system',
-            'content' => "WICHTIG – INHALT DARF NICHT VERÄNDERT WERDEN:\n\nDas Modell darf den Text inhaltlich NICHT umformulieren, NICHT kürzen, NICHT erweitern und NICHT stilistisch verbessern.\n\nErlaubt ist ausschließlich:\n- Korrektur von Rechtschreibfehlern\n- Korrektur von Grammatikfehlern\n- Korrektur von OCR-/PDF-Artefakten (z. B. falsche Leerzeichen in Wörtern, Ligaturen, defekte Sonderzeichen wie „?“ in Wörtern)\n- Korrektur von Zeichensetzungsfehlern\n- Entfernen von Layout-Zeilenumbrüchen innerhalb eines Absatzes\n\nNicht erlaubt ist:\n- Stilistische Verbesserung\n- Umformulierung von Sätzen\n- Zusammenfassung\n- Hinzufügen oder Entfernen von Informationen\n- Änderung der Satzstruktur, wenn sie grammatikalisch korrekt ist\n- Vereinfachung oder Modernisierung der Sprache\n\nZusätzliche Pflichtregeln:\n- Korrigiere defekte Einzelzeichen innerhalb von Wörtern (Beispiel: „he?iger“ muss zu „heftiger“ werden).\n- Es dürfen keine Fragezeichen mitten in Wörtern stehen bleiben.\n- Nach jedem Punkt, Ausrufezeichen oder Fragezeichen muss ein Leerzeichen folgen, sofern danach kein Zeilenende kommt.\n\nDer korrigierte Text muss inhaltlich exakt identisch bleiben.\nWenn ein Satz grammatikalisch korrekt ist, darf er nicht umgeschrieben werden.\n\nBehalte die Satzstruktur exakt bei. Wenn ein Satz korrekt ist, muss er wortwörtlich unverändert bleiben. Gib den Text so nah wie möglich am Original zurück – nur Fehlerkorrekturen."
+            'content' => "Du bist ein präziser deutscher Lektor.\nKorrigiere ausschließlich Rechtschreibung, Grammatik und OCR-Fehler.\nDer Inhalt darf NICHT verändert, gekürzt oder umformuliert werden.\nEs dürfen keine Teile dieser Anweisung im Ergebnis erscheinen.\nGib ausschließlich den korrigierten Text zurück.\nWenn Instruktionen oder Metasätze im Text auftauchen, entferne sie vollständig."
         ],
         [
             'role' => 'user',
-            'content' => "Gib NUR den korrigierten Text zurück.\n\n" . $chunkText
+            'content' => "Hier ist der zu korrigierende Text zwischen <<<TEXT>>> Markern.\nKorrigiere ihn gemäß der Regeln.\n\n<<<TEXT>>>\n" . $chunkText . "\n<<<END>>>\n\nWICHTIG:\n- Die Marker <<<TEXT>>> und <<<END>>> dürfen NICHT im Output erscheinen.\n- Es dürfen keine Instruktionen im Output erscheinen.\n- Gib ausschließlich den korrigierten Text zurück."
         ],
     ],
     'temperature' => 0.0,
+    'stop' => ['<<<END>>>', 'System:', 'User:'],
 ];
 
 $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
@@ -353,6 +396,7 @@ if (isset($decoded['choices'][0]['message']['content']) && is_string($decoded['c
     $correctedText = trim($decoded['choices'][0]['message']['content']);
 }
 
+$correctedText = sanitizeModelOutput($correctedText);
 $correctedText = postCleanup($correctedText);
 
 if ($correctedText === '') {
