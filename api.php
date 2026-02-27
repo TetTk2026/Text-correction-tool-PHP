@@ -108,6 +108,9 @@ function preCleanupOCR(string $text): string {
 function postCleanup(string $text): string {
     $t = cleanupUrlsAndQuotes($text);
     $t = preg_replace('/\s+([,.;:!?])/u', '$1', $t) ?? $t;
+    $t = preg_replace('/(?<=\p{L})\?+(?=\p{L})/u', '', $t) ?? $t;
+    $t = preg_replace('/([.!?])(?![\s\n]|$)/u', '$1 ', $t) ?? $t;
+    $t = preg_replace('/ {2,}/u', ' ', $t) ?? $t;
     return $t;
 }
 
@@ -278,7 +281,7 @@ $payload = [
     'messages' => [
         [
             'role' => 'system',
-            'content' => "WICHTIG – INHALT DARF NICHT VERÄNDERT WERDEN:\n\nDas Modell darf den Text inhaltlich NICHT umformulieren, NICHT kürzen, NICHT erweitern und NICHT stilistisch verbessern.\n\nErlaubt ist ausschließlich:\n- Korrektur von Rechtschreibfehlern\n- Korrektur von Grammatikfehlern\n- Korrektur von OCR-/PDF-Artefakten (z. B. falsche Leerzeichen in Wörtern, Ligaturen, defekte Sonderzeichen wie „?“ in Wörtern)\n- Korrektur von Zeichensetzungsfehlern\n- Entfernen von Layout-Zeilenumbrüchen innerhalb eines Absatzes\n\nNicht erlaubt ist:\n- Stilistische Verbesserung\n- Umformulierung von Sätzen\n- Zusammenfassung\n- Hinzufügen oder Entfernen von Informationen\n- Änderung der Satzstruktur, wenn sie grammatikalisch korrekt ist\n- Vereinfachung oder Modernisierung der Sprache\n\nDer korrigierte Text muss inhaltlich exakt identisch bleiben.\nWenn ein Satz grammatikalisch korrekt ist, darf er nicht umgeschrieben werden.\n\nBehalte die Satzstruktur exakt bei. Wenn ein Satz korrekt ist, muss er wortwörtlich unverändert bleiben. Gib den Text so nah wie möglich am Original zurück – nur Fehlerkorrekturen."
+            'content' => "WICHTIG – INHALT DARF NICHT VERÄNDERT WERDEN:\n\nDas Modell darf den Text inhaltlich NICHT umformulieren, NICHT kürzen, NICHT erweitern und NICHT stilistisch verbessern.\n\nErlaubt ist ausschließlich:\n- Korrektur von Rechtschreibfehlern\n- Korrektur von Grammatikfehlern\n- Korrektur von OCR-/PDF-Artefakten (z. B. falsche Leerzeichen in Wörtern, Ligaturen, defekte Sonderzeichen wie „?“ in Wörtern)\n- Korrektur von Zeichensetzungsfehlern\n- Entfernen von Layout-Zeilenumbrüchen innerhalb eines Absatzes\n\nNicht erlaubt ist:\n- Stilistische Verbesserung\n- Umformulierung von Sätzen\n- Zusammenfassung\n- Hinzufügen oder Entfernen von Informationen\n- Änderung der Satzstruktur, wenn sie grammatikalisch korrekt ist\n- Vereinfachung oder Modernisierung der Sprache\n\nZusätzliche Pflichtregeln:\n- Korrigiere defekte Einzelzeichen innerhalb von Wörtern (Beispiel: „he?iger“ muss zu „heftiger“ werden).\n- Es dürfen keine Fragezeichen mitten in Wörtern stehen bleiben.\n- Nach jedem Punkt, Ausrufezeichen oder Fragezeichen muss ein Leerzeichen folgen, sofern danach kein Zeilenende kommt.\n\nDer korrigierte Text muss inhaltlich exakt identisch bleiben.\nWenn ein Satz grammatikalisch korrekt ist, darf er nicht umgeschrieben werden.\n\nBehalte die Satzstruktur exakt bei. Wenn ein Satz korrekt ist, muss er wortwörtlich unverändert bleiben. Gib den Text so nah wie möglich am Original zurück – nur Fehlerkorrekturen."
         ],
         [
             'role' => 'user',
