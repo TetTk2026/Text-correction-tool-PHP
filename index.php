@@ -117,8 +117,8 @@ $hasSessionKey = isset($_SESSION['openrouter_api_key']) && $_SESSION['openrouter
 
     <div class="row" style="margin-top:10px;">
       <label class="tight" style="display:flex; gap:8px; align-items:center;">
-        <input type="checkbox" id="smoothLineBreaks" checked style="width:auto;">
-        Zeilenumbrüche glätten
+        <input type="checkbox" id="enablePreCleanup" checked style="width:auto;">
+        Pre-Cleanup vor Korrektur anwenden
       </label>
       <label class="tight" style="display:flex; gap:8px; align-items:center;">
         <input type="checkbox" id="preferParagraphSplit" checked style="width:auto;">
@@ -182,7 +182,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     apiReach: document.getElementById('apiReach'),
     keyStored: document.getElementById('keyStored'),
     statusMessage: document.getElementById('statusMessage'),
-    smoothLineBreaks: document.getElementById('smoothLineBreaks'),
+    enablePreCleanup: document.getElementById('enablePreCleanup'),
     preferParagraphSplit: document.getElementById('preferParagraphSplit'),
     splitOnWordBoundary: document.getElementById('splitOnWordBoundary'),
     enableScrollSync: document.getElementById('enableScrollSync')
@@ -342,31 +342,32 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     return (v || '').replace(/[&<>"']/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]));
   }
 
-  function applyOcrSpecialRules(text) {
-    let t = text;
-    // Spezialregel: öffentliche/Öffentlichkeit OCR-Muster "ö? ent" -> "öffent".
-    t = t.replace(/([Öö])\?\s*ent/gu, '$1ffent');
-    // Spezialregel: Haftung OCR-Muster "Ha? ung" -> "Haftung".
-    t = t.replace(/Ha\?\s*ung/gu, 'Haftung');
-    // Spezialregel: Themen OCR-Muster "The? en" und "? emen" -> "Themen".
-    t = t.replace(/The\?\s*en/gu, 'Themen').replace(/\?\s*emen/gu, 'Themen');
-    // Spezialregel: finden OCR-Muster mit Steuerzeichen/Leerzeichen vor "nden" -> "finden".
-    t = t.replace(/(?:\u0016|\s)nden\b/gu, ' finden');
-    return t;
-  }
-
   function cleanupUrlsAndQuotes(text) {
     let t = text;
-    // URL/Domain-Spaces: "www. " -> "www." und Spaces um Punkte in Domains entfernen.
-    t = t.replace(/\bwww\.\s+/giu, 'www.')
-      .replace(/([\p{L}\d-])\s*\.\s*(de|com|net|org|info|eu)\b/giu, '$1.$2');
+    // URL/Domain-Spaces: nur in domain-ähnlichen Tokens normalisieren.
+    t = t.replace(/\b(?:www\.\s*)?[a-z0-9-]+(?:\s*\.\s*[a-z]{2,})+\b/giu, (domainToken) => (
+      domainToken
+        .replace(/^www\.\s*/iu, 'www.')
+        .replace(/\s*\.\s*/gu, '.')
+    ));
     // Anführungszeichen-Spaces: Space direkt nach » und direkt vor « entfernen.
     t = t.replace(/»\s+/gu, '»').replace(/\s+«/gu, '«');
     return t;
   }
 
-  function preCleanupText(text) {
-    let t = (text || '').normalize('NFKC');
+  function collapseSpacedLetterChains(text) {
+    return text.replace(/(?:\p{L}\s){3,}\p{L}/gu, (chain) => chain.replace(/\s+/gu, ''));
+  }
+
+  function collapseSpacesPerLine(text) {
+    return text
+      .split('\n')
+      .map((line) => line.replace(/[ ]{2,}/gu, ' '))
+      .join('\n');
+  }
+
+  function preCleanupOCR(text) {
+    let t = (text || '').replace(/\r\n|\r/g, '\n').normalize('NFKC');
     t = t
       .replace(/ﬀ/gu, 'ff')
       .replace(/ﬁ/gu, 'fi')
@@ -374,14 +375,23 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
       .replace(/ﬃ/gu, 'ffi')
       .replace(/ﬄ/gu, 'ffl');
 
-    t = applyOcrSpecialRules(t);
+    t = collapseSpacedLetterChains(t);
     t = cleanupUrlsAndQuotes(t);
 
-    // Zwischen Buchstaben stehendes ? als OCR-Platzhalter zu "f" (vorsichtig, deutsch OCR-Fälle).
-    t = t.replace(/(?<=\p{L})\?(?=\p{L})/gu, 'f');
-    // Spaces mitten im Wort reduzieren: "Selbstwer t" -> "Selbstwert".
-    t = t.replace(/(\p{L})\s+(\p{L})/gu, '$1$2');
-    t = t.replace(/\s+([,.;:!?])/gu, '$1').replace(/[ \t]{2,}/gu, ' ');
+    t = t.replace(/\t/gu, ' ');
+    t = collapseSpacesPerLine(t);
+
+    // Sicherheits-Checks:
+    // 1) "Stefanie Stahl ist Diplom-Psychologin ..." bleibt unverändert.
+    // 2) "S e l b s t w e r t g e f ü h l" -> "Selbstwertgefühl".
+    // 3) "Stärkung des Selbstwertgefühls" bleibt mit Leerzeichen.
+    // 4) "www. stefaniestahl. de" -> "www.stefaniestahl.de".
+    return t;
+  }
+
+  function postCleanup(text) {
+    let t = cleanupUrlsAndQuotes(text || '');
+    t = t.replace(/\s+([,.;:!?])/gu, '$1');
     return t;
   }
 
@@ -445,7 +455,8 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   }
 
   function splitText() {
-    const text = preCleanupText(el.fullText.value || '');
+    const rawText = el.fullText.value || '';
+    const text = el.enablePreCleanup.checked ? preCleanupOCR(rawText) : rawText;
     const size = Math.max(300, Number(el.chunkSize.value) || 2000);
     const textChunks = splitIntoChunksSmart(text, size, {
       preferParagraphSplit: el.preferParagraphSplit.checked,
@@ -509,7 +520,8 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
 
     const result = await apiCall('correctBlock', {
       blockId: block.id,
-      chunkText: preCleanupText(block.originalText),
+      chunkText: block.originalText,
+      preCleanupEnabled: el.enablePreCleanup.checked,
       modelInput: el.modelInput.value,
       __signal: controller.signal
     });
@@ -525,8 +537,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
     } else {
       block.status = 'fertig';
       const correctedText = result.correctedText || '';
-      const withPostRules = cleanupUrlsAndQuotes(el.smoothLineBreaks.checked ? normalizeAndFluidifyText(correctedText) : correctedText);
-      block.correctedText = withPostRules;
+      block.correctedText = postCleanup(correctedText);
       block.httpStatus = result.httpStatus ?? 200;
       block.meta = result.meta || {};
       block.elapsedMs = typeof result?.meta?.elapsedMs === 'number' ? result.meta.elapsedMs : null;
@@ -656,7 +667,7 @@ window.CSRF_TOKEN = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UN
   document.getElementById('btnMerge').addEventListener('click', mergeCorrected);
   document.getElementById('btnFluid').addEventListener('click', () => {
     mergeCorrected();
-    el.exportText.value = cleanupUrlsAndQuotes(normalizeAndFluidifyText(el.exportText.value));
+    el.exportText.value = postCleanup(normalizeAndFluidifyText(el.exportText.value));
   });
 
   document.getElementById('btnCopy').addEventListener('click', async () => {

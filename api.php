@@ -58,7 +58,35 @@ function deriveReferer(): string {
     return ($https ? 'https://' : 'http://') . $host;
 }
 
-function preCleanupText(string $text): string {
+function collapseSpacedLetterChains(string $text): string {
+    return preg_replace_callback('/(?:\p{L}\s){3,}\p{L}/u', static function (array $matches): string {
+        return preg_replace('/\s+/u', '', $matches[0]) ?? $matches[0];
+    }, $text) ?? $text;
+}
+
+function collapseSpacesPerLine(string $text): string {
+    $lines = preg_split('/\n/', $text) ?: [];
+    foreach ($lines as $index => $line) {
+        $line = str_replace("\t", ' ', $line);
+        $lines[$index] = preg_replace('/[ ]{2,}/u', ' ', $line) ?? $line;
+    }
+    return implode("\n", $lines);
+}
+
+function cleanupUrlsAndQuotes(string $text): string {
+    $t = preg_replace_callback('/\b(?:www\.\s*)?[a-z0-9-]+(?:\s*\.\s*[a-z]{2,})+\b/iu', static function (array $matches): string {
+        $token = $matches[0];
+        $token = preg_replace('/^www\.\s*/iu', 'www.', $token) ?? $token;
+        return preg_replace('/\s*\.\s*/u', '.', $token) ?? $token;
+    }, $text) ?? $text;
+
+    $t = preg_replace('/»\s+/u', '»', $t) ?? $t;
+    $t = preg_replace('/\s+«/u', '«', $t) ?? $t;
+
+    return $t;
+}
+
+function preCleanupOCR(string $text): string {
     $t = str_replace(["\r\n", "\r"], "\n", $text);
 
     if (class_exists('Normalizer')) {
@@ -70,41 +98,16 @@ function preCleanupText(string $text): string {
 
     $t = str_replace(['ﬀ', 'ﬁ', 'ﬂ', 'ﬃ', 'ﬄ'], ['ff', 'fi', 'fl', 'ffi', 'ffl'], $t);
 
-    // Spezialregel: öffentliche/Öffentlichkeit OCR-Muster "ö? ent" -> "öffent".
-    $t = preg_replace('/([Öö])\?\s*ent/u', '$1ffent', $t) ?? $t;
-    // Spezialregel: Haftung OCR-Muster "Ha? ung" -> "Haftung".
-    $t = preg_replace('/Ha\?\s*ung/u', 'Haftung', $t) ?? $t;
-    // Spezialregel: Themen OCR-Muster "The? en" und "? emen" -> "Themen".
-    $t = preg_replace('/The\?\s*en/u', 'Themen', $t) ?? $t;
-    $t = preg_replace('/\?\s*emen/u', 'Themen', $t) ?? $t;
-    // Spezialregel: finden OCR-Muster mit Steuerzeichen/Leerzeichen vor "nden" -> "finden".
-    $t = preg_replace('/(?:\x16|\s)nden\b/u', ' finden', $t) ?? $t;
+    $t = collapseSpacedLetterChains($t);
+    $t = cleanupUrlsAndQuotes($t);
+    $t = collapseSpacesPerLine($t);
 
-    // URL/Domain-Spaces: "www. " und Spaces um Domain-Punkte reparieren.
-    $t = preg_replace('/\bwww\.\s+/iu', 'www.', $t) ?? $t;
-    $t = preg_replace('/([\p{L}\d-])\s*\.\s*(de|com|net|org|info|eu)\b/iu', '$1.$2', $t) ?? $t;
-
-    // Anführungszeichen-Spaces: Space nach » und vor « entfernen.
-    $t = preg_replace('/»\s+/u', '»', $t) ?? $t;
-    $t = preg_replace('/\s+«/u', '«', $t) ?? $t;
-
-    // Zwischen Buchstaben stehendes ? als OCR-Platzhalter zu "f".
-    $t = preg_replace('/(?<=\p{L})\?(?=\p{L})/u', 'f', $t) ?? $t;
-    // Spaces mitten im Wort reduzieren: "Selbstwer t" -> "Selbstwert".
-    $t = preg_replace('/(\p{L})\s+(\p{L})/u', '$1$2', $t) ?? $t;
-
-    $t = preg_replace('/\s+([,.;:!?])/u', '$1', $t) ?? $t;
-    $t = preg_replace('/[ \t]{2,}/u', ' ', $t) ?? $t;
-
-    return trim($t);
+    return $t;
 }
 
-function applyPostCleanup(string $text): string {
-    $t = $text;
-    $t = preg_replace('/\bwww\.\s+/iu', 'www.', $t) ?? $t;
-    $t = preg_replace('/([\p{L}\d-])\s*\.\s*(de|com|net|org|info|eu)\b/iu', '$1.$2', $t) ?? $t;
-    $t = preg_replace('/»\s+/u', '»', $t) ?? $t;
-    $t = preg_replace('/\s+«/u', '«', $t) ?? $t;
+function postCleanup(string $text): string {
+    $t = cleanupUrlsAndQuotes($text);
+    $t = preg_replace('/\s+([,.;:!?])/u', '$1', $t) ?? $t;
     return $t;
 }
 
@@ -240,6 +243,7 @@ requireCsrf($body);
 $blockId = $body['blockId'] ?? null;
 $chunkText = $body['chunkText'] ?? '';
 $modelInput = $body['modelInput'] ?? '';
+$preCleanupEnabled = $body['preCleanupEnabled'] ?? true;
 
 if (!is_int($blockId) && !(is_string($blockId) && ctype_digit($blockId))) {
     jsonResponse(['ok' => false, 'error' => ['message' => 'blockId fehlt/ungültig'], 'httpStatus' => 400], 400);
@@ -251,6 +255,10 @@ if (!is_string($modelInput)) {
     $modelInput = '';
 }
 
+if (!is_bool($preCleanupEnabled)) {
+    $preCleanupEnabled = true;
+}
+
 $apiKey = (string) getenv('OPENROUTER_API_KEY');
 if ($apiKey === '' && isset($_SESSION['openrouter_api_key']) && is_string($_SESSION['openrouter_api_key'])) {
     $apiKey = trim($_SESSION['openrouter_api_key']);
@@ -259,7 +267,9 @@ if ($apiKey === '') {
     jsonResponse(['ok' => false, 'error' => ['message' => 'Kein OpenRouter API-Key verfügbar'], 'httpStatus' => 401], 401);
 }
 
-$chunkText = preCleanupText($chunkText);
+if ($preCleanupEnabled) {
+    $chunkText = preCleanupOCR($chunkText);
+}
 $modelId = modelIdFromInput($modelInput);
 $startMs = (int) round(microtime(true) * 1000);
 
@@ -268,7 +278,7 @@ $payload = [
     'messages' => [
         [
             'role' => 'system',
-            'content' => "Du bist ein präziser deutscher Lektor für OCR-Texte. Repariere OCR-Artefakte, inklusive '?' als Platzhalter in Wörtern, fehlerhafte Umlaute/ß, falsche Leerzeichen in URLs, kaputte Anführungszeichen-Abstände und getrennte Wortteile.\nLasse keine Fragezeichen mitten in Wörtern stehen.\nArbeite streng nicht-kreativ: keine inhaltlichen Ergänzungen, keine Umformulierungen über notwendige Korrekturen hinaus.\nEntferne harte Layout-Zeilenumbrüche innerhalb von Absätzen, erhalte echte Absatztrennungen und erhalte Überschriften als eigene Zeilen."
+            'content' => "Du bist ein präziser deutscher Lektor für OCR-Texte. Repariere OCR-Artefakte, inklusive '?' als Platzhalter in Wörtern, fehlerhafte Umlaute/ß, falsche Leerzeichen in URLs, kaputte Anführungszeichen-Abstände und getrennte Wortteile.\nLasse keine Fragezeichen mitten in Wörtern stehen.\nArbeite streng nicht-kreativ: keine inhaltlichen Ergänzungen, keine Umformulierungen über notwendige Korrekturen hinaus.\nBehalte bestehende Zeilenumbrüche und Absatzgrenzen bei; kein automatisches Zusammenführen von Zeilen zu Fließtext."
         ],
         [
             'role' => 'user',
@@ -340,8 +350,7 @@ if (isset($decoded['choices'][0]['message']['content']) && is_string($decoded['c
     $correctedText = trim($decoded['choices'][0]['message']['content']);
 }
 
-$correctedText = normalizeAndFluidifyText($correctedText);
-$correctedText = applyPostCleanup($correctedText);
+$correctedText = postCleanup($correctedText);
 
 if ($correctedText === '') {
     jsonResponse([
